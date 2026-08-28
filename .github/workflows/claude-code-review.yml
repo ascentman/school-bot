@@ -26,4 +26,5 @@ jobs:
           prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
           # --allowedTools обовʼязковий: без нього не піднімається MCP-сервер,
           # який публікує inline-коментарі, і рецензія осідає лише в логах.
+          show_full_output: true
           claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment"'
