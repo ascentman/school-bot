@@ -424,3 +424,65 @@ async def test_second_contact_while_waiting_for_name_still_asks(send, people, ma
     async with maker() as s:
         saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 930))
     assert saved.full_name == "Литвин Тетяна Олегівна"
+
+
+async def test_command_with_leading_space_is_not_a_name(send, people, maker):
+    """Один зайвий пробіл не має повертати баг «команда як ПІБ»."""
+    from sqlalchemy import select
+
+    from school_bot.db.models import Teacher
+
+    await send(tg_id=940, contact=_own_contact(940, "+380991110940"))
+    await send(" /help", tg_id=940)
+
+    async with maker() as s:
+        saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 940))
+    assert saved.full_name != "/help", "команда з пробілом потрапила в ПІБ"
+
+
+async def test_name_command_works_while_already_waiting_for_a_name(send, people):
+    """/name у стані очікування має перепитати, а не зʼїстися."""
+    await send(tg_id=941, contact=_own_contact(941, "+380991110941"))
+    replies = await send("/name", tg_id=941)
+    assert any("ПІБ" in r for r in replies), replies
+    assert not any("згодом" in r for r in replies), "команду зʼїв skip_full_name"
+
+
+async def test_recycled_number_frees_up_after_admin_reimport(send, people, maker):
+    """Номер звільненого вчителя згодом дістається новому працівнику.
+
+    Блокування вимкненого запису не має назавжди закривати номер: після
+    того як адміністратор внесе його у список під новим ПІБ, нова людина
+    має зареєструватися без втручання.
+    """
+    from sqlalchemy import select
+
+    from school_bot.db.models import Role, Teacher
+    from school_bot.domain.teachers import import_teachers
+
+    async with maker() as s:
+        s.add(
+            Teacher(
+                full_name="Звільнений",
+                tg_user_id=950,
+                phone="380991110950",
+                role=Role.TEACHER,
+                is_active=False,
+            )
+        )
+        await s.commit()
+
+    # Заблоковано, доки адміністратор не втрутився.
+    blocked = await send(tg_id=951, contact=_own_contact(951, "+380991110950"))
+    assert any("вимкнено" in r for r in blocked)
+
+    # Адміністратор вносить номер у список під новим ПІБ.
+    async with maker() as s:
+        await import_teachers(s, "Новий Працівник, 0991110950")
+        await s.commit()
+
+    replies = await send(tg_id=951, contact=_own_contact(951, "+380991110950"))
+    assert not any("вимкнено" in r for r in replies), replies
+    async with maker() as s:
+        rebound = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 951))
+    assert rebound is not None and rebound.is_active

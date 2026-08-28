@@ -155,7 +155,20 @@ async def receive_contact(
     await message.answer(texts.ASK_FULL_NAME, reply_markup=ReplyKeyboardRemove())
 
 
-@router.message(SelfRegister.full_name, F.text.regexp(r"^\s*[^/]"))
+# [^/\s], а не [^/]: інакше «\s*» бектрекає й " /help" проходить як ПІБ.
+@router.message(Command("name"))
+async def change_name_start(message: Message, state: FSMContext) -> None:
+    """Змінити власне ПІБ.
+
+    Зареєстровано ДО хендлерів стану: інакше skip_full_name перехоплював
+    /name разом з усім іншим, і команда спрацьовувала лише з другого разу.
+    """
+    await state.set_state(SelfRegister.full_name)
+    await state.update_data(changing=True)
+    await message.answer(texts.ASK_NAME_AGAIN)
+
+
+@router.message(SelfRegister.full_name, F.text.regexp(r"^\s*[^/\s]"))
 async def receive_full_name(
     message: Message, session: AsyncSession, teacher: Teacher, state: FSMContext
 ) -> None:
@@ -188,14 +201,6 @@ async def skip_full_name(message: Message, state: FSMContext) -> None:
     # Через /name ПІБ уже було нормальне й лишається таким. Казати «записав
     # вас як у Telegram» тут — неправда, і вчитель вирішить, що втратив ПІБ.
     await message.answer(texts.NAME_UNCHANGED if changing else texts.NAME_POSTPONED)
-
-
-@router.message(Command("name"))
-async def change_name_start(message: Message, state: FSMContext) -> None:
-    """Змінити власне ПІБ. Заодно вихід із ситуації, коли реєстрацію відклали."""
-    await state.set_state(SelfRegister.full_name)
-    await state.update_data(changing=True)
-    await message.answer(texts.ASK_NAME_AGAIN)
 
 
 @router.message(F.text == texts.BTN_MY_CLASSES)
