@@ -24,6 +24,13 @@ class Base(DeclarativeBase):
     pass
 
 
+# Довжина ПІБ. Відколи зʼявилася самореєстрація, його задає будь-хто, а SQLite
+# довжину VARCHAR не перевіряє — тож межа потрібна на вході, і саме тут, поруч
+# з колонкою, щоб вони не розʼїхалися.
+MAX_NAME_LEN = 200
+MIN_NAME_LEN = 3
+
+
 class Role(StrEnum):
     TEACHER = "teacher"
     ADMIN = "admin"
@@ -55,7 +62,7 @@ class Teacher(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     tg_user_id: Mapped[int | None] = mapped_column(Integer, unique=True, index=True)
-    full_name: Mapped[str] = mapped_column(String(200))
+    full_name: Mapped[str] = mapped_column(String(MAX_NAME_LEN))
     # Нормалізований номер (380671234567) — ключ, за яким вчитель привʼязує
     # свій Telegram, поділившись контактом. Unique не дає двом записам
     # претендувати на один номер.

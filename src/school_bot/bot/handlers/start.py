@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from school_bot.bot import keyboards, texts
 from school_bot.bot.commands import set_personal_commands
 from school_bot.clock import today
-from school_bot.db.models import Teacher
+from school_bot.db.models import MAX_NAME_LEN, MIN_NAME_LEN, Teacher
 from school_bot.domain.meals import classes_for_teacher, get_entry
 from school_bot.domain.teachers import register_by_phone
 
@@ -193,8 +193,14 @@ async def receive_full_name(
     # Схлопуємо переноси: ПІБ у кілька рядків ламає однорядковий формат
     # списків вчителів і класів.
     name = " ".join((message.text or "").split())
-    if len(name) < 3:
+    if len(name) < MIN_NAME_LEN:
         await message.answer(texts.NAME_TOO_SHORT)
+        return
+    # Ліміт повідомлення Telegram — 4096 символів, а списки вчителів і класів
+    # зліплюють кількох в одне. Без верхньої межі один самозареєстрований
+    # ламає ці екрани для всіх адміністраторів.
+    if len(name) > MAX_NAME_LEN:
+        await message.answer(texts.NAME_TOO_LONG)
         return
     if not any(ch.isalpha() for ch in name):
         await message.answer(texts.NAME_NEEDS_LETTERS)

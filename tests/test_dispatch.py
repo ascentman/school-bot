@@ -519,3 +519,36 @@ async def test_multiline_name_is_collapsed(send, people, maker):
         saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 961))
     assert "\n" not in saved.full_name
     assert saved.full_name == "Гнатюк Леся Андріївна"
+
+
+async def test_absurdly_long_name_is_rejected(send, people, maker):
+    """Довге ПІБ від самозареєстрованого ламає списки для всіх адміністраторів.
+
+    teachers_list і classes_list зліплюють кількох вчителів в одне
+    повідомлення; ліміт Telegram — 4096 символів.
+    """
+    from sqlalchemy import select
+
+    from school_bot.db.models import Teacher
+
+    await send(tg_id=970, contact=_own_contact(970, "+380991110970"))
+    replies = await send("Я" * 3000, tg_id=970)
+
+    assert any("задовге" in r.lower() or "довг" in r.lower() for r in replies), replies
+    async with maker() as s:
+        saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 970))
+    assert len(saved.full_name) <= 200
+
+
+async def test_admin_screens_survive_a_long_name(send, people, maker):
+    """Навіть якщо довге ПІБ якось потрапило в базу — екрани мають працювати."""
+    from school_bot.db.models import Role, Teacher
+
+    async with maker() as s:
+        s.add(Teacher(full_name="Я" * 200, tg_user_id=971, role=Role.TEACHER))
+        await s.commit()
+
+    for screen in (texts.BTN_TEACHERS, texts.BTN_CLASSES):
+        replies = await send(screen, tg_id=ADMIN_ID)
+        assert replies
+        assert all(len(r) <= 4096 for r in replies), f"перевищено ліміт на «{screen}»"
