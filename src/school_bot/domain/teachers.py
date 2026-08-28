@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from school_bot.db.models import Role, SchoolClass, Teacher
+from school_bot.db.models import MAX_NAME_LEN, MIN_NAME_LEN, Role, SchoolClass, Teacher
 from school_bot.domain.classes import (
     CLASS_RE,
     create_classes,
@@ -68,8 +68,13 @@ def parse_line(line: str) -> ParsedTeacher | None:
 
     if not parsed.name:
         parsed.error = "не знайдено імені"
-    elif len(parsed.name) < 3:
+    elif len(parsed.name) < MIN_NAME_LEN:
         parsed.error = "надто коротке імʼя"
+    elif len(parsed.name) > MAX_NAME_LEN:
+        # Той самий краш, заради якого межа й зʼявилася: биття в CSV дає
+        # рядок з валідним номером і величезним «іменем», а списки вчителів
+        # потім не влазять у ліміт повідомлення Telegram.
+        parsed.error = "задовге імʼя"
     elif parsed.phone is None:
         parsed.error = "не знайдено номера"
     return parsed
@@ -190,13 +195,6 @@ async def register_by_phone(
     existing = await link_by_phone(session, phone, tg_user_id)
     if existing is not None:
         return existing, False
-
-    # Запис за цим Telegram-акаунтом уже є, але link_by_phone його не побачила —
-    # він вимкнений. Створювати другий не можна: tg_user_id унікальний,
-    # і вставка падає з IntegrityError.
-    stale = await session.scalar(select(Teacher).where(Teacher.tg_user_id == tg_user_id))
-    if stale is not None:
-        return stale, False
 
     normalized = normalize_phone(phone)
     owner = (

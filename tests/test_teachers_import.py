@@ -262,3 +262,20 @@ async def test_reimport_keeps_role_and_classes_of_an_active_teacher(session):
     assert teacher.role is Role.ADMIN, "знято права з чинного адміністратора"
     assert teacher.tg_user_id == 500
     assert [c.name for c in await classes_for_teacher(session, teacher.id)] == ["1-А"]
+
+
+async def test_import_rejects_absurdly_long_name(session):
+    """Межа довжини має діяти й в імпорті, не лише в самореєстрації.
+
+    Бите CSV дає рядок із валідним номером і величезним «іменем» — і списки
+    вчителів перестають влазити в ліміт повідомлення Telegram.
+    """
+    from school_bot.domain.teachers import import_teachers, parse_teacher_list
+
+    (parsed,) = parse_teacher_list("Я" * 3000 + ", 0671234567")
+    assert not parsed.ok
+    assert parsed.error == "задовге імʼя"
+
+    result = await import_teachers(session, "Я" * 3000 + ", 0671234567")
+    assert result.created == []
+    assert len(result.failed) == 1

@@ -20,6 +20,8 @@ from school_bot.bot.filters import IsAdmin
 from school_bot.clock import today
 from school_bot.config import settings
 from school_bot.db.models import (
+    MAX_NAME_LEN,
+    MIN_NAME_LEN,
     UA_DAY_KIND,
     ClassAssignment,
     DayKind,
@@ -282,9 +284,12 @@ async def add_teacher_start(message: Message, state: FSMContext) -> None:
 
 @router.message(AddTeacher.name)
 async def add_teacher_name(message: Message, session: AsyncSession, state: FSMContext) -> None:
-    name = (message.text or "").strip()
-    if len(name) < 3:
+    name = " ".join((message.text or "").split())
+    if len(name) < MIN_NAME_LEN:
         await message.answer(texts.NAME_TOO_SHORT)
+        return
+    if len(name) > MAX_NAME_LEN:
+        await message.answer(texts.NAME_TOO_LONG)
         return
 
     classes = await active_classes(session)

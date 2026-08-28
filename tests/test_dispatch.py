@@ -615,3 +615,25 @@ async def test_name_during_initial_registration_is_not_a_change(send, people):
 
     assert not any("без змін" in r for r in replies), replies
     assert any("згодом" in r for r in replies), replies
+
+
+async def test_disabled_user_is_told_so_not_that_account_is_unknown(send, maker):
+    """«Облікового запису не знайдено» вимкненому — неправда, яка збиває з пантелику."""
+    from school_bot.db.models import Role, Teacher
+
+    async with maker() as s:
+        s.add(
+            Teacher(full_name="Вимкнений", tg_user_id=995, role=Role.TEACHER, is_active=False)
+        )
+        await s.commit()
+
+    replies = await send("Коваленко Марія Іванівна", tg_id=995)
+    assert any("вимкнено" in r for r in replies), replies
+    assert not any("не знайдено" in r for r in replies)
+
+
+async def test_add_teacher_rejects_absurdly_long_name(send, people):
+    """/add_teacher — ще один шлях, яким довге ПІБ потрапляло в базу."""
+    await send("/add_teacher", tg_id=ADMIN_ID)
+    replies = await send("Я" * 3000, tg_id=ADMIN_ID)
+    assert any("довг" in r.lower() for r in replies), replies
