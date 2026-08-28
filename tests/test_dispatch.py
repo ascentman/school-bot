@@ -13,9 +13,11 @@ from datetime import date
 import pytest
 import pytest_asyncio
 from aiogram.types import Contact
+from sqlalchemy import select
 
 from school_bot.bot import texts
 from school_bot.db.models import Role, SchoolClass, Teacher
+from school_bot.domain.teachers import link_by_phone
 
 ADMIN_ID = 100
 TEACHER_ID = 200
@@ -483,9 +485,36 @@ async def test_recycled_number_frees_up_after_admin_reimport(send, people, maker
 
     replies = await send(tg_id=951, contact=_own_contact(951, "+380991110950"))
     assert not any("вимкнено" in r for r in replies), replies
+
     async with maker() as s:
         rebound = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 951))
+        everyone = list(await s.scalars(select(Teacher).where(Teacher.phone == "380991110950")))
+
+    # Слабка перевірка «просто зареєструвався» тут нічого не варта: людина
+    # отримувала порожній дублікат, а реімпортований запис лишався підвішеним
+    # під недосяжним tg_user_id. Тому звіряємо саме тотожність запису.
     assert rebound is not None and rebound.is_active
+    assert rebound.full_name == "Новий Працівник", "дістався дублікат, а не реімпортований запис"
+    assert rebound.phone == "380991110950", "номер лишився за старим записом"
+    assert len(everyone) == 1, "номер розʼїхався по двох записах"
+
+
+async def test_reimport_does_not_unlink_a_working_teacher(session):
+    """Звільняти номер можна лише у вимкненого запису.
+
+    Інакше виправлення одруку в ПІБ через повторний імпорт відвʼязувало б
+    чинного вчителя від його Telegram.
+    """
+    from school_bot.domain.teachers import import_teachers
+
+    await import_teachers(session, "Коваленко Марія, 0671234567, 1-А")
+    await link_by_phone(session, "0671234567", 500)
+
+    await import_teachers(session, "Коваленко Марія Іванівна, 0671234567, 1-А")
+
+    teacher = await session.scalar(select(Teacher).where(Teacher.phone == "380671234567"))
+    assert teacher.tg_user_id == 500, "чинного вчителя відвʼязано від Telegram"
+    assert teacher.full_name == "Коваленко Марія Іванівна"
 
 
 async def test_start_while_waiting_for_name_does_not_finish_silently(send, people, maker):

@@ -146,6 +146,14 @@ async def import_teachers(
             await session.flush()
             result.created.append(item)
         else:
+            if not teacher.is_active:
+                # Адміністратор свідомо повертає цей номер у список, а
+                # попереднього власника було вимкнено. Стара привʼязка до
+                # Telegram веде в нікуди, тож звільняємо номер: інакше нова
+                # людина отримає порожній дублікат, а запис із її ПІБ
+                # і класами назавжди лишиться під недосяжним акаунтом.
+                teacher.tg_user_id = None
+                log.info("Номер %s звільнено для нового власника", teacher.phone)
             teacher.full_name = item.name
             teacher.is_active = True
             result.updated.append(item)
