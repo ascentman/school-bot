@@ -380,6 +380,7 @@ async def test_free_number_strips_identity_and_rights(session):
     teacher = await session.scalar(select(Teacher).where(Teacher.phone == "380671234567"))
     teacher.role = Role.ADMIN
     teacher.tg_user_id = 500
+    teacher.is_active = False          # звільняти можна лише вимкнений запис
     await session.flush()
 
     freed = await free_number(session, teacher.id)
@@ -388,3 +389,26 @@ async def test_free_number_strips_identity_and_rights(session):
     assert freed.tg_user_id is None
     assert freed.role is Role.TEACHER
     assert await classes_for_teacher(session, freed.id) == []
+
+
+async def test_free_number_refuses_an_active_teacher(session):
+    """Застаріла кнопка не має обнуляти живого вчителя.
+
+    Список у меню /free_number — знімок; поки він висить, запис могли
+    повернути в дію реімпортом.
+    """
+    from school_bot.db.models import Role
+    from school_bot.domain.meals import classes_for_teacher
+    from school_bot.domain.teachers import free_number, import_teachers
+
+    await import_teachers(session, "Коваленко Марія, 0671234567, 1-А")
+    teacher = await session.scalar(select(Teacher).where(Teacher.phone == "380671234567"))
+    teacher.role = Role.ADMIN
+    teacher.tg_user_id = 500
+    await session.flush()
+
+    assert await free_number(session, teacher.id) is None, "обнулено активного вчителя"
+    assert teacher.tg_user_id == 500
+    assert teacher.phone == "380671234567"
+    assert teacher.role is Role.ADMIN
+    assert [c.name for c in await classes_for_teacher(session, teacher.id)] == ["1-А"]

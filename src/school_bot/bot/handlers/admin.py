@@ -422,7 +422,8 @@ async def free_number_apply(
 ) -> None:
     teacher = await free_number(session, int(callback_data.arg))
     if teacher is None:
-        await query.answer(texts.NOTHING_TO_EDIT, show_alert=True)
+        # Або запис зник, або його встигли повернути в дію, поки меню висіло.
+        await query.answer(texts.CANNOT_FREE_ACTIVE, show_alert=True)
         return
     await query.message.edit_text(texts.number_freed(teacher.full_name))
     await query.answer()

@@ -235,14 +235,19 @@ async def register_by_phone(
         return teacher, True
     except IntegrityError:
         log.info("Повторна реєстрація tg=%s — беру наявний запис", tg_user_id)
-        # Конфлікт міг бути і по tg_user_id, і по номеру — перевіряємо обидва.
+        # Конфлікт міг бути і по tg_user_id, і по номеру. Але віддати можна
+        # лише свій запис: якщо номер щойно зайняв інший Telegram-акаунт,
+        # повернення знайденого рядка привітало б людину під чужим імʼям
+        # і показало б чужі класи.
         existing = await session.scalar(
             select(Teacher).where(Teacher.tg_user_id == tg_user_id)
         )
         if existing is None and normalized is not None:
-            existing = await session.scalar(
+            claimed = await session.scalar(
                 select(Teacher).where(Teacher.phone == normalized)
             )
+            if claimed is not None and claimed.tg_user_id == tg_user_id:
+                existing = claimed
         if existing is None:
             raise
         return existing, False
@@ -259,6 +264,13 @@ async def free_number(session: AsyncSession, teacher_id: int) -> Teacher | None:
     """
     teacher = await session.get(Teacher, teacher_id)
     if teacher is None:
+        return None
+
+    # Список у меню — знімок на момент відкриття. Поки повідомлення висить,
+    # запис могли повернути в дію (реімпорт завжди ставить is_active=True),
+    # і застаріла кнопка обнулила б живого вчителя.
+    if teacher.is_active:
+        log.warning("Відмовлено у звільненні номера: %s уже активний", teacher.full_name)
         return None
 
     teacher.tg_user_id = None
