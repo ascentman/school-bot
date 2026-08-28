@@ -29,7 +29,9 @@ class SelfRegister(StatesGroup):
 INVITE_PREFIX = "inv_"
 
 
-async def _still_needs_name(message: Message, state: FSMContext) -> bool:
+async def _still_needs_name(
+    message: Message, state: FSMContext, teacher: Teacher | None
+) -> bool:
     """Чи бот саме зараз чекає ПІБ.
 
     Точок входу, які інакше завершили б реєстрацію під ніком з Telegram,
@@ -38,6 +40,15 @@ async def _still_needs_name(message: Message, state: FSMContext) -> bool:
     """
     if await state.get_state() != SelfRegister.full_name:
         return False
+
+    # Доступ вимкнули просто під час реєстрації. Далі просити ПІБ не можна:
+    # звичайний текст від вимкненого користувача middleware вже не пропустить,
+    # і людина ходитиме по колу — бот просить те, чого сам не прийме.
+    if teacher is not None and not teacher.is_active:
+        await state.clear()
+        await message.answer(texts.ACCOUNT_DISABLED, reply_markup=ReplyKeyboardRemove())
+        return True
+
     await message.answer(texts.ASK_FULL_NAME, reply_markup=ReplyKeyboardRemove())
     return True
 
@@ -65,7 +76,7 @@ async def start_with_invite(
     teacher: Teacher | None,
     state: FSMContext,
 ) -> None:
-    if await _still_needs_name(message, state):
+    if await _still_needs_name(message, state, teacher):
         return
 
     await state.clear()
@@ -103,7 +114,7 @@ async def start_plain(
     teacher: Teacher | None,
     state: FSMContext,
 ) -> None:
-    if await _still_needs_name(message, state):
+    if await _still_needs_name(message, state, teacher):
         return
 
     await state.clear()
@@ -128,7 +139,7 @@ async def receive_contact(
     # Контакт, надісланий повторно, поки бот чекає ПІБ: запис уже створено,
     # тож інакше спрацювало б звичайне привітання — під ніком з Telegram
     # і без жодної згадки, що ПІБ так і не вказане.
-    if await _still_needs_name(message, state):
+    if await _still_needs_name(message, state, teacher):
         return
 
     await state.clear()

@@ -581,3 +581,23 @@ async def test_admin_screens_survive_a_long_name(send, people, maker):
         replies = await send(screen, tg_id=ADMIN_ID)
         assert replies
         assert all(len(r) <= 4096 for r in replies), f"перевищено ліміт на «{screen}»"
+
+
+async def test_disabling_during_registration_does_not_loop(send, people, maker):
+    """Вимкнення під час очікування ПІБ не має лишати суперечливий глухий кут.
+
+    Бот просив ПІБ на /start, але саме ПІБ уже не приймав: middleware
+    відсікала звичайний текст як від невідомого користувача.
+    """
+    from school_bot.db.models import Teacher
+
+    await send(tg_id=980, contact=_own_contact(980, "+380991110980"))
+
+    async with maker() as s:
+        fresh = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 980))
+        fresh.is_active = False
+        await s.commit()
+
+    replies = await send("/start", tg_id=980)
+    assert not any("ПІБ" in r for r in replies), f"бот просить ПІБ у вимкненого: {replies}"
+    assert any("вимкнено" in r for r in replies), replies
