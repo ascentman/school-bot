@@ -50,9 +50,6 @@ jobs:
 
             The project is a Telegram bot in Python. Comments and user-facing
             strings are in Ukrainian; write your review in Ukrainian too.
-          # Показує окремі виклики інструментів, щоб прогін, який нічого не
-          # відрецензував, можна було діагностувати за логом, а не вгадувати.
-          show_full_output: true
           # Без цього перший же виклик інструмента блокується. --allowedTools
           # тут не годиться: він замінив би власний список інструментів
           # екшену, зокрема ті, якими публікується коментар.
