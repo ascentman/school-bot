@@ -106,6 +106,13 @@ async def receive_contact(
     state: FSMContext,
 ) -> None:
     """Привʼязати акаунт за номером із надісланого контакту."""
+    # Контакт, надісланий повторно, поки бот чекає ПІБ: запис уже створено,
+    # тож інакше спрацювало б звичайне привітання — під ніком з Telegram
+    # і без жодної згадки, що ПІБ так і не вказане.
+    if await state.get_state() == SelfRegister.full_name:
+        await message.answer(texts.ASK_FULL_NAME, reply_markup=ReplyKeyboardRemove())
+        return
+
     await state.clear()
 
     if teacher is not None and teacher.is_active:

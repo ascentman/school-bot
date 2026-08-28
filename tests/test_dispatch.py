@@ -391,3 +391,36 @@ async def test_postponing_a_name_change_does_not_claim_a_rename(send, people, ma
     replies = await send("/help", tg_id=922)          # передумав
 
     assert not any("як ви підписані в Telegram" in r for r in replies), replies
+
+
+async def test_class_name_with_html_does_not_break_add_class(send, people):
+    """Відповідь на /add_class підставляє те, що набрав адміністратор.
+
+    Достатньо одруку «1<3» — і повідомлення падає з TelegramBadRequest,
+    той самий баг, який цей PR лікує для ПІБ.
+    """
+    await send("/add_class", tg_id=ADMIN_ID)
+    replies = await send("1<3, 2-А", tg_id=ADMIN_ID)
+
+    joined = "\n".join(replies)
+    assert replies
+    assert "1<3" not in joined, "неекранований ввід адміністратора"
+    assert "1&lt;3" in joined
+
+
+async def test_second_contact_while_waiting_for_name_still_asks(send, people, maker):
+    """Повторний контакт не має мовчки завершувати реєстрацію під ніком."""
+    from sqlalchemy import select
+
+    from school_bot.db.models import Teacher
+
+    await send(tg_id=930, contact=_own_contact(930, "+380991110930"), name="Вова 🌻")
+    replies = await send(tg_id=930, contact=_own_contact(930, "+380991110930"), name="Вова 🌻")
+
+    assert any("ПІБ" in r for r in replies), replies
+
+    # Стан не втрачено: наступне повідомлення все ще приймається як ПІБ.
+    await send("Литвин Тетяна Олегівна", tg_id=930)
+    async with maker() as s:
+        saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 930))
+    assert saved.full_name == "Литвин Тетяна Олегівна"

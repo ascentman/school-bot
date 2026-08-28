@@ -102,7 +102,7 @@ def prompt_answered(class_name: str, d: Date, count: int, at: str, *, edited: bo
     head = "✏️ Виправлено" if edited else "✅ Записано"
     return (
         f"✅ <b>{esc(class_name)}</b> · {format_date(d)} — <b>{plural_children(count)}</b>\n"
-        f"<i>{head} о {at}.</i>"
+        f"<i>{head} о {esc(at)}.</i>"
     )
 
 
@@ -189,7 +189,7 @@ NO_TEACHERS_HINT = "\n⚠️ Немає жодного вчителя — поч
 
 
 def sheet_url(sheet_id: str) -> str:
-    return f"https://docs.google.com/spreadsheets/d/{sheet_id}"
+    return f"https://docs.google.com/spreadsheets/d/{esc(sheet_id)}"
 
 
 def sync_done(synced: int, total: int) -> str:
@@ -216,15 +216,17 @@ def days_off_cleared(count: int) -> str:
 def classes_added(created: list[str], rejected: list[str]) -> str:
     parts = []
     if created:
-        parts.append("✅ Додано: " + ", ".join(created))
+        parts.append("✅ Додано: " + ", ".join(esc(c) for c in created))
     if rejected:
-        parts.append("⚠️ Пропущено: " + ", ".join(rejected))
+        # rejected — сирі шматки того, що набрав адміністратор: одрук на
+        # кшталт «1<3» інакше валить відповідь розбором сутностей.
+        parts.append("⚠️ Пропущено: " + ", ".join(esc(r) for r in rejected))
     return "\n".join(parts) or NOTHING_ADDED
 
 
 def report_caption(title: str, total: int, school_days: int, missing: int) -> str:
     caption = (
-        f"📅 <b>{title}</b>\n"
+        f"📅 <b>{esc(title)}</b>\n"
         f"Разом: <b>{total}</b> порцій за {school_days} навч. дн."
     )
     if missing:
@@ -300,7 +302,7 @@ def import_done(count: int, link: str) -> str:
     return (
         f"✅ Додано вчителів: <b>{count}</b>\n\n"
         "Тепер надішліть їм це посилання — одне на всіх:\n"
-        f"{link}\n\n"
+        f"{esc(link)}\n\n"
         "Вони натиснуть «Почати», поділяться номером — і я сам знайду кожного "
         "у списку разом з його класами.\n\n"
         "<i>Поки вчитель не відкриє бота, запити йому не надходитимуть — "
@@ -323,7 +325,7 @@ def teacher_classes_saved(name: str, class_names: list[str]) -> str:
 def invite_created(name: str, link: str) -> str:
     return (
         f"✅ Вчителя <b>{esc(name)}</b> додано.\n\n"
-        f"Надішліть це посилання для реєстрації:\n{link}\n\n"
+        f"Надішліть це посилання для реєстрації:\n{esc(link)}\n\n"
         "<i>Посилання одноразове.</i>"
     )
 
