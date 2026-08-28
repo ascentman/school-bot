@@ -52,7 +52,7 @@ def _client() -> Any:
     return gspread.authorize(creds)
 
 
-def _matrix_to_grid(matrix: MonthMatrix) -> list[list[Any]]:
+def matrix_to_grid(matrix: MonthMatrix) -> list[list[Any]]:
     """Матриця → двовимірний масив клітинок, точно як у XLSX."""
     header_days = ["Клас"] + [c.label for c in matrix.columns] + ["Разом"]
     header_wd = [""] + [(c.off_marker or c.weekday_short) for c in matrix.columns] + [""]
@@ -81,7 +81,7 @@ def _matrix_to_grid(matrix: MonthMatrix) -> list[list[Any]]:
     return grid
 
 
-def _format_requests(matrix: MonthMatrix, sheet_id: int) -> list[dict[str, Any]]:
+def format_requests(matrix: MonthMatrix, sheet_id: int) -> list[dict[str, Any]]:
     """Заливка колонок і пропущених днів. Кольори ті самі, що в XLSX і PDF."""
     n_rows = len(matrix.rows)
     header_row = 3          # 0-based: рядок 4 таблиці
@@ -138,7 +138,7 @@ def _rebuild_month_sync(matrix: MonthMatrix) -> str:
     book = gc.open_by_key(settings.google_sheet_id)
     name = tab_name(matrix.year, matrix.month)
 
-    grid = _matrix_to_grid(matrix)
+    grid = matrix_to_grid(matrix)
     n_cols = len(matrix.columns) + 2
 
     try:
@@ -149,7 +149,7 @@ def _rebuild_month_sync(matrix: MonthMatrix) -> str:
         ws = book.add_worksheet(title=name, rows=max(len(grid) + 5, 20), cols=n_cols)
 
     ws.update(values=grid, range_name="A1", value_input_option="RAW")
-    book.batch_update({"requests": _format_requests(matrix, ws.id)})
+    book.batch_update({"requests": format_requests(matrix, ws.id)})
 
     # Свіжий місяць — першою вкладкою, щоб перевірка бачила його одразу.
     try:
@@ -160,11 +160,12 @@ def _rebuild_month_sync(matrix: MonthMatrix) -> str:
     return ws.url
 
 
-def _sync_summary_sync(matrices: list[MonthMatrix]) -> None:
-    """Вкладка «Зведення»: місяці × класи."""
-    gc = _client()
-    book = gc.open_by_key(settings.google_sheet_id)
+def summary_grid(matrices: list[MonthMatrix]) -> list[list[Any]]:
+    """Вкладка «Зведення»: місяці × класи.
 
+    Винесено з _sync_summary_sync окремо, щоб перевірятися без клієнта Google.
+    Клас, якого не було в старіших місяцях, дає порожню клітинку, а не нуль.
+    """
     class_names: list[str] = []
     for m in matrices:
         for row in m.rows:
@@ -179,8 +180,15 @@ def _sync_summary_sync(matrices: list[MonthMatrix]) -> None:
             + [totals.get(name, "") for name in class_names]
             + [m.grand_total]
         )
+    return grid
 
-    n_cols = len(class_names) + 2
+
+def _sync_summary_sync(matrices: list[MonthMatrix]) -> None:
+    gc = _client()
+    book = gc.open_by_key(settings.google_sheet_id)
+
+    grid = summary_grid(matrices)
+    n_cols = len(grid[0])
     try:
         ws = book.worksheet(SUMMARY_TAB)
         ws.clear()
