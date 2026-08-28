@@ -132,6 +132,10 @@ async def receive_contact(
         fallback_name=message.from_user.full_name,
     )
 
+    if not found.is_active:
+        await message.answer(texts.ACCOUNT_DISABLED, reply_markup=ReplyKeyboardRemove())
+        return
+
     if not is_new:
         log.info("Вчитель %s привʼязався за номером", found.full_name)
         await _greet(message, session, found)
@@ -172,14 +176,18 @@ async def skip_full_name(message: Message, state: FSMContext) -> None:
     Інакше хендлер стану ковтав команди: /help зберігався як ПІБ, сама
     команда не спрацьовувала, а вийти зі стану було нічим.
     """
+    changing = (await state.get_data()).get("changing", False)
     await state.clear()
-    await message.answer(texts.NAME_POSTPONED)
+    # Через /name ПІБ уже було нормальне й лишається таким. Казати «записав
+    # вас як у Telegram» тут — неправда, і вчитель вирішить, що втратив ПІБ.
+    await message.answer(texts.NAME_UNCHANGED if changing else texts.NAME_POSTPONED)
 
 
 @router.message(Command("name"))
 async def change_name_start(message: Message, state: FSMContext) -> None:
     """Змінити власне ПІБ. Заодно вихід із ситуації, коли реєстрацію відклали."""
     await state.set_state(SelfRegister.full_name)
+    await state.update_data(changing=True)
     await message.answer(texts.ASK_NAME_AGAIN)
 
 

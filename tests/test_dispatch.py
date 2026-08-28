@@ -348,3 +348,46 @@ async def test_injected_html_in_name_is_escaped_on_every_admin_screen(
 
     joined = "\n".join(await send(screen, tg_id=ADMIN_ID))
     assert "<a href=" not in joined, f"неекранований HTML на екрані «{screen}»"
+
+
+async def test_disabled_teacher_cannot_return_via_new_telegram_account(send, maker):
+    """/off_teacher має триматися й проти нового Telegram-акаунта.
+
+    Людина видаляє акаунт, реєструє новий на той самий номер — tg_user_id
+    інший, тож перевірки за ним не спрацьовують, і бот видавав новий
+    робочий обліковий запис.
+    """
+    from sqlalchemy import select
+
+    from school_bot.db.models import Role, Teacher
+
+    async with maker() as s:
+        s.add(
+            Teacher(
+                full_name="Звільнений",
+                tg_user_id=920,
+                phone="380991110920",
+                role=Role.TEACHER,
+                is_active=False,
+            )
+        )
+        await s.commit()
+
+    # Той самий номер, але вже інший Telegram-акаунт.
+    replies = await send(tg_id=921, contact=_own_contact(921, "+380991110920"))
+
+    assert any("вимкнено" in r for r in replies), replies
+    async with maker() as s:
+        sneaked = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 921))
+    assert sneaked is None, "деактивований вчитель отримав новий робочий запис"
+
+
+async def test_postponing_a_name_change_does_not_claim_a_rename(send, people, maker):
+    """Через /name повідомлення не має стверджувати, що ПІБ замінено на нік."""
+    await send(tg_id=922, contact=_own_contact(922, "+380991110922"))
+    await send("Савченко Ірина Володимирівна", tg_id=922)
+
+    await send("/name", tg_id=922)
+    replies = await send("/help", tg_id=922)          # передумав
+
+    assert not any("як ви підписані в Telegram" in r for r in replies), replies

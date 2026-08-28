@@ -183,14 +183,23 @@ async def register_by_phone(
         return stale, False
 
     normalized = normalize_phone(phone)
+    owner = (
+        await session.scalar(select(Teacher).where(Teacher.phone == normalized))
+        if normalized is not None
+        else None
+    )
 
-    # Номер уже закріплений за іншим Telegram-акаунтом (людина завела новий,
-    # або оператор перевидав номер). Запис створюємо без номера: інакше
-    # UNIQUE-обмеження валить реєстрацію, а перезаписувати чужу привʼязку
-    # не можна. Розібратися, хто це, зможе адміністратор.
-    if normalized is not None and await session.scalar(
-        select(Teacher.id).where(Teacher.phone == normalized)
-    ):
+    if owner is not None and not owner.is_active:
+        # Доступ цій людині вимкнув адміністратор. Новий Telegram-акаунт на
+        # той самий номер не має цього обходити, інакше /off_teacher нічого
+        # не значить: досить видалити акаунт і зареєструвати заново.
+        log.warning("Спроба зайти під вимкненим номером %s", normalized)
+        return owner, False
+
+    if owner is not None:
+        # Номер закріплений за іншим активним акаунтом (оператор перевидав
+        # номер). Запис створюємо без номера: UNIQUE-обмеження інакше валить
+        # реєстрацію, а перезаписувати чужу привʼязку не можна.
         log.warning("Номер %s уже закріплений за іншим акаунтом", normalized)
         normalized = None
 
