@@ -169,7 +169,11 @@ async def import_teachers(
             await session.flush()
             result.created.append(item)
         else:
-            reused = not teacher.is_active
+            # Той самий запис під іншим ПІБ — номер перевидали новій людині.
+            # Якщо ж ПІБ те саме, адміністратор просто повертає доступ: реімпорт
+            # списку — єдиний спосіб зняти /off_teacher, і він не має коштувати
+            # людині ролі, класів і привʼязки до Telegram.
+            reused = not teacher.is_active and teacher.full_name != item.name
             if reused:
                 # Адміністратор свідомо повертає цей номер у список, а
                 # попереднього власника було вимкнено. Стара привʼязка до
@@ -246,9 +250,14 @@ async def register_by_phone(
         return teacher, True
     except IntegrityError:
         log.info("Повторна реєстрація tg=%s — беру наявний запис", tg_user_id)
+        # Конфлікт міг бути і по tg_user_id, і по номеру — перевіряємо обидва.
         existing = await session.scalar(
             select(Teacher).where(Teacher.tg_user_id == tg_user_id)
         )
+        if existing is None and normalized is not None:
+            existing = await session.scalar(
+                select(Teacher).where(Teacher.phone == normalized)
+            )
         if existing is None:
             raise
         return existing, False

@@ -316,3 +316,28 @@ async def test_double_contact_does_not_crash_registration(session):
     second, again = await register_by_phone(session, "+380991112233", 777, "Вова")
     assert not again
     assert second.id == first.id
+
+
+async def test_reactivating_the_same_person_keeps_role_and_classes(session):
+    """Реімпорт того самого списку повертає доступ, а не обнуляє людину.
+
+    Реімпорт — єдиний спосіб зняти /off_teacher, тож випадкове вимкнення
+    адміністратора не має коштувати йому ролі, класів і привʼязки.
+    """
+    from school_bot.db.models import Role
+    from school_bot.domain.meals import classes_for_teacher
+    from school_bot.domain.teachers import import_teachers
+
+    await import_teachers(session, "Шевчук Оксана Петрівна, 0509876543, 3-Б")
+    teacher = await session.scalar(select(Teacher).where(Teacher.phone == "380509876543"))
+    teacher.role = Role.ADMIN
+    teacher.tg_user_id = 600
+    teacher.is_active = False           # адміністратор помилково вимкнув
+    await session.flush()
+
+    await import_teachers(session, "Шевчук Оксана Петрівна, 0509876543, 3-Б")
+
+    assert teacher.is_active
+    assert teacher.role is Role.ADMIN, "втрачено роль при поверненні доступу"
+    assert teacher.tg_user_id == 600, "втрачено привʼязку до Telegram"
+    assert [c.name for c in await classes_for_teacher(session, teacher.id)] == ["3-Б"]
