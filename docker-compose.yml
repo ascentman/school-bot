@@ -1,0 +1,30 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: Europe/Kyiv
+      DATABASE_URL: sqlite+aiosqlite:////app/data/school.db
+    volumes:
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sqlite3; sqlite3.connect('/app/data/school.db').close()"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+  # Щонічний бекап БД. Тримає останні 30 копій у data/backups.
+  backup:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: Europe/Kyiv
+      DATABASE_URL: sqlite+aiosqlite:////app/data/school.db
+    volumes:
+      - ./data:/app/data
+    entrypoint: ["sh", "-c", "while true; do sleep 86400; school-bot backup; done"]
+    depends_on:
+      - bot

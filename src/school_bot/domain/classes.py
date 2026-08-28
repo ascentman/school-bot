@@ -1,0 +1,97 @@
+"""Створення класів з тексту та розбір діапазонів дат."""
+
+from __future__ import annotations
+
+import re
+from datetime import date as Date
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from school_bot.db.models import ClassAssignment, SchoolClass
+
+# "3-Б", "3 Б", "3б", "10-А"
+CLASS_RE = re.compile(r"^\s*(\d{1,2})\s*[-–—\s]?\s*([А-ЯЇІЄҐа-яїієґA-Za-z]?)\s*$")
+
+DATE_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})")
+
+
+def parse_class_name(raw: str) -> tuple[str, int, str] | None:
+    """'3б' → ('3-Б', 3, 'Б'). Повертає None, якщо не розпізнано."""
+    m = CLASS_RE.match(raw)
+    if not m:
+        return None
+    grade = int(m.group(1))
+    if not 1 <= grade <= 12:
+        return None
+    letter = m.group(2).upper()
+    name = f"{grade}-{letter}" if letter else str(grade)
+    return name, grade, letter
+
+
+def parse_date_range(raw: str) -> tuple[Date, Date] | None:
+    """'28.10.2026 - 03.11.2026' або '28.10.2026' → (start, end)."""
+    found = DATE_RE.findall(raw)
+    if not found:
+        return None
+    try:
+        dates = [Date(int(y), int(mo), int(d)) for d, mo, y in found[:2]]
+    except ValueError:
+        return None
+    start = dates[0]
+    end = dates[1] if len(dates) > 1 else start
+    return (start, end) if start <= end else (end, start)
+
+
+async def create_classes(session: AsyncSession, raw: str) -> tuple[list[str], list[str]]:
+    """Створити класи зі списку через кому. Повертає (створені, відхилені)."""
+    created: list[str] = []
+    rejected: list[str] = []
+
+    existing = set(await session.scalars(select(SchoolClass.name)))
+
+    for chunk in re.split(r"[,;\n]+", raw):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parsed = parse_class_name(chunk)
+        if parsed is None:
+            rejected.append(chunk)
+            continue
+        name, grade, letter = parsed
+        if name in existing:
+            rejected.append(f"{name} (вже є)")
+            continue
+        session.add(
+            SchoolClass(
+                name=name,
+                grade=grade,
+                letter=letter,
+                sort_order=grade * 100 + (ord(letter) if letter else 0),
+            )
+        )
+        existing.add(name)
+        created.append(name)
+
+    await session.flush()
+    return created, rejected
+
+
+async def set_teacher_classes(
+    session: AsyncSession, teacher_id: int, class_ids: set[int]
+) -> None:
+    """Замінити набір класів вчителя на заданий."""
+    current = list(
+        await session.scalars(
+            select(ClassAssignment).where(ClassAssignment.teacher_id == teacher_id)
+        )
+    )
+    for row in current:
+        if row.class_id not in class_ids:
+            await session.delete(row)
+    have = {row.class_id for row in current}
+    for class_id in class_ids - have:
+        session.add(
+            ClassAssignment(class_id=class_id, teacher_id=teacher_id, is_primary=True)
+        )
+    await session.flush()
