@@ -193,3 +193,38 @@ def test_summary_tab_name_is_stable():
 @pytest.mark.parametrize("month,expected", [(1, "2026-01"), (12, "2026-12")])
 def test_tab_name_pads_month(month: int, expected: str):
     assert tab_name(2026, month) == expected
+
+
+async def test_format_requests_paint_weekends_and_vacations(session, classes, teacher):
+    """Заливка вихідних і канікул — інакше переплутану умову ніхто не помітить.
+
+    Червону підсвітку пропущених днів перевіряє тест вище; сіра та жовта
+    лишалися неперевіреними, хоча саме на них перевірка дивиться першою.
+    """
+    matrix = await _september(session, classes, teacher, today=date(2026, 9, 30))
+    reqs = format_requests(matrix, sheet_id=1)
+
+    grey = {"red": 0.937, "green": 0.937, "blue": 0.937}
+    yellow = {"red": 1.0, "green": 0.949, "blue": 0.8}
+
+    def painted_columns(color: dict[str, float]) -> set[int]:
+        return {
+            r["repeatCell"]["range"]["startColumnIndex"]
+            for r in reqs
+            if r.get("repeatCell", {})
+            .get("cell", {})
+            .get("userEnteredFormat", {})
+            .get("backgroundColor")
+            == color
+        }
+
+    # Колонка = день місяця (перша колонка — назви класів).
+    weekends = painted_columns(grey)
+    assert 5 in weekends and 6 in weekends      # субота й неділя
+    assert 1 not in weekends                    # вівторок
+
+    # 14 і 15 вересня 2026 — понеділок і вівторок, тож обидва потрапили
+    # в канікули; mark_range вихідні пропускає, вони й так неробочі.
+    vacations = painted_columns(yellow)
+    assert {14, 15} <= vacations
+    assert not (weekends & vacations), "день не може бути водночас сірим і жовтим"
