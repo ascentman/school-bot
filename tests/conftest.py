@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 import pytest_asyncio
-from aiogram.types import Chat, Message, Update, User
+from aiogram.types import Chat, Contact, Message, Update, User
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from school_bot.db.models import Base, ClassAssignment, Role, SchoolClass, Teacher
@@ -178,14 +178,21 @@ def send(dispatcher, api_bot, maker):
     """Надіслати текст від імені користувача й повернути відповіді бота."""
     _ACTIVE_MAKER["maker"] = maker
 
-    async def _send(text: str, *, tg_id: int) -> list[str]:
+    async def _send(
+        text: str | None = None,
+        *,
+        tg_id: int,
+        contact: Contact | None = None,
+        name: str = "Тест",
+    ) -> list[str]:
         api_bot.calls.clear()
         message = Message(
             message_id=1,
             date=datetime.now(UTC),
             chat=Chat(id=tg_id, type="private"),
-            from_user=User(id=tg_id, is_bot=False, first_name="Тест"),
+            from_user=User(id=tg_id, is_bot=False, first_name=name),
             text=text,
+            contact=contact,
         ).as_(api_bot)
         await dispatcher.feed_update(api_bot, Update(update_id=1, message=message))
         return api_bot.texts

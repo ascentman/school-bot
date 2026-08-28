@@ -151,3 +151,59 @@ async def test_link_ignores_deactivated_teacher(session):
     t.is_active = False
     await session.flush()
     assert await link_by_phone(session, "0671234567", 555) is None
+
+
+# --- самореєстрація ------------------------------------------------------
+
+
+async def test_register_creates_teacher_for_unknown_phone(session):
+    """Номера немає у списку — запис створюється, а не відхиляється."""
+    from school_bot.domain.teachers import register_by_phone
+
+    teacher = await register_by_phone(session, "+380991112233", 777, "Вова 🌻")
+    assert teacher.tg_user_id == 777
+    assert teacher.phone == "380991112233"
+    assert teacher.is_active
+
+
+async def test_register_returns_existing_when_phone_is_known(session):
+    """Вчитель зі списку має отримати свій запис, а не дублікат."""
+    from sqlalchemy import func, select
+
+    from school_bot.domain.teachers import register_by_phone
+
+    await import_teachers(session, LIST)
+    teacher = await register_by_phone(session, "0671234567", 777, "Вова 🌻")
+
+    assert teacher.full_name == "Коваленко Марія Іванівна"   # імʼя зі списку, не з Telegram
+    assert await session.scalar(select(func.count()).select_from(Teacher)) == 3
+
+
+async def test_register_is_idempotent(session):
+    from sqlalchemy import func, select
+
+    from school_bot.domain.teachers import register_by_phone
+
+    await register_by_phone(session, "0991112233", 777, "Вова")
+    await register_by_phone(session, "+380991112233", 777, "Вова")
+    assert await session.scalar(select(func.count()).select_from(Teacher)) == 1
+
+
+async def test_register_does_not_hijack_someone_elses_number(session):
+    """Чужий номер не має віддавати доступ до чужого запису навіть зараз,
+    коли перевірку за списком прибрано."""
+    from sqlalchemy import func, select
+
+    from school_bot.domain.teachers import register_by_phone
+
+    await import_teachers(session, LIST)
+    await register_by_phone(session, "0671234567", 555, "Перший")
+
+    intruder = await register_by_phone(session, "0671234567", 999, "Другий")
+    assert intruder.tg_user_id == 999
+    assert intruder.full_name == "Другий"
+    assert intruder.phone is None, "чужу привʼязку до номера перезаписувати не можна"
+    # Запис Марії лишився за першим користувачем.
+    maria = await session.scalar(select(Teacher).where(Teacher.tg_user_id == 555))
+    assert maria.full_name == "Коваленко Марія Іванівна"
+    assert await session.scalar(select(func.count()).select_from(Teacher)) == 4

@@ -7,6 +7,7 @@ import logging
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, ReplyKeyboardRemove
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,10 +17,14 @@ from school_bot.bot.commands import set_personal_commands
 from school_bot.clock import today
 from school_bot.db.models import Teacher
 from school_bot.domain.meals import classes_for_teacher, get_entry
-from school_bot.domain.teachers import link_by_phone
+from school_bot.domain.teachers import link_by_phone, register_by_phone
 
 log = logging.getLogger(__name__)
 router = Router(name="start")
+
+
+class SelfRegister(StatesGroup):
+    full_name = State()
 
 INVITE_PREFIX = "inv_"
 
@@ -114,14 +119,41 @@ async def receive_contact(
         await message.answer(texts.CONTACT_NOT_YOURS, reply_markup=keyboards.share_contact())
         return
 
-    found = await link_by_phone(session, contact.phone_number, message.from_user.id)
-    if found is None:
-        log.info("Невідомий номер при реєстрації: tg_id=%s", message.from_user.id)
-        await message.answer(texts.CONTACT_NOT_FOUND, reply_markup=ReplyKeyboardRemove())
+    known = await link_by_phone(session, contact.phone_number, message.from_user.id)
+    if known is not None:
+        log.info("Вчитель %s привʼязався за номером", known.full_name)
+        await _greet(message, session, known)
         return
 
-    log.info("Вчитель %s привʼязався за номером", found.full_name)
-    await _greet(message, session, found)
+    # Номера немає у списку — реєструємо самі. Імʼя з Telegram часто нік,
+    # тож одразу просимо ПІБ: саме воно піде у списки й звіти.
+    fresh = await register_by_phone(
+        session,
+        contact.phone_number,
+        message.from_user.id,
+        fallback_name=message.from_user.full_name,
+    )
+    log.info("Самореєстрація: %s (tg=%s)", fresh.full_name, message.from_user.id)
+    await state.set_state(SelfRegister.full_name)
+    await message.answer(texts.ASK_FULL_NAME, reply_markup=ReplyKeyboardRemove())
+
+
+@router.message(SelfRegister.full_name)
+async def receive_full_name(
+    message: Message, session: AsyncSession, teacher: Teacher, state: FSMContext
+) -> None:
+    name = (message.text or "").strip()
+    if len(name) < 3:
+        await message.answer(texts.NAME_TOO_SHORT)
+        return
+
+    teacher.full_name = name
+    await session.flush()
+    await state.clear()
+    log.info("Вчитель %s назвав ПІБ", name)
+
+    await message.answer(texts.NAME_ACCEPTED)
+    await _greet(message, session, teacher)
 
 
 @router.message(F.text == texts.BTN_MY_CLASSES)

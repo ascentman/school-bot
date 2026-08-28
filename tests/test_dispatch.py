@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
+from aiogram.types import Contact
 
 from school_bot.bot import texts
 from school_bot.db.models import Role, SchoolClass, Teacher
@@ -114,3 +115,76 @@ async def test_welcome_warns_when_no_classes(send, maker):
 
     replies = await send("/start", tg_id=404)
     assert any("не закріплено жодного класу" in r for r in replies)
+
+
+# --- самореєстрація за номером -------------------------------------------
+
+
+def _own_contact(tg_id: int, phone: str) -> Contact:
+    return Contact(phone_number=phone, first_name="Хтось", user_id=tg_id)
+
+
+async def test_unknown_number_is_registered_not_refused(send, people, maker):
+    """Перевірку за списком прибрано: людина не впирається у відмову."""
+    from sqlalchemy import select
+
+    from school_bot.db.models import Teacher
+
+    replies = await send(tg_id=900, contact=_own_contact(900, "+380991112233"))
+    assert any("ПІБ" in r for r in replies), replies
+    assert not any("немає в списку" in r for r in replies)
+
+    async with maker() as s:
+        created = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 900))
+    assert created is not None
+    assert created.phone == "380991112233"
+
+
+async def test_name_is_saved_after_self_registration(send, people, maker):
+    from sqlalchemy import select
+
+    from school_bot.db.models import Teacher
+
+    await send(tg_id=901, contact=_own_contact(901, "+380991110001"), name="Вова 🌻")
+    replies = await send("Коваленко Марія Іванівна", tg_id=901)
+
+    assert any("Вітаю, Коваленко Марія Іванівна" in r for r in replies), replies
+    async with maker() as s:
+        saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 901))
+    assert saved.full_name == "Коваленко Марія Іванівна"
+
+
+async def test_self_registered_teacher_is_warned_about_no_classes(send, people):
+    await send(tg_id=902, contact=_own_contact(902, "+380991110002"))
+    replies = await send("Мельник Ігор Богданович", tg_id=902)
+    assert any("не закріплено жодного класу" in r for r in replies)
+
+
+async def test_too_short_name_is_rejected(send, people, maker):
+    from sqlalchemy import select
+
+    from school_bot.db.models import Teacher
+
+    await send(tg_id=903, contact=_own_contact(903, "+380991110003"))
+    replies = await send("Ок", tg_id=903)
+    assert any("Надто коротко" in r for r in replies)
+
+    # Стан не скинуто — наступне повідомлення все ще чекає ПІБ.
+    await send("Гнатюк Леся Андріївна", tg_id=903)
+    async with maker() as s:
+        saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 903))
+    assert saved.full_name == "Гнатюк Леся Андріївна"
+
+
+async def test_someone_elses_contact_is_still_refused(send, people, maker):
+    """Прибрали перевірку за списком, але не захист від чужого контакту."""
+    from sqlalchemy import select
+
+    from school_bot.db.models import Teacher
+
+    foreign = _own_contact(999, "+380991110004")     # user_id ≠ відправник
+    replies = await send(tg_id=904, contact=foreign)
+
+    assert any("контакт іншої людини" in r for r in replies)
+    async with maker() as s:
+        assert await s.scalar(select(Teacher).where(Teacher.tg_user_id == 904)) is None

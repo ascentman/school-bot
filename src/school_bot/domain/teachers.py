@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 
@@ -21,6 +22,8 @@ from school_bot.domain.classes import (
     set_teacher_classes,
 )
 from school_bot.domain.phones import looks_like_phone, normalize_phone
+
+log = logging.getLogger(__name__)
 
 SEPARATORS = re.compile(r"[,;\t|]+")
 
@@ -153,6 +156,38 @@ async def import_teachers(
 
     await session.flush()
     return result
+
+
+async def register_by_phone(
+    session: AsyncSession, phone: str, tg_user_id: int, fallback_name: str
+) -> Teacher:
+    """Знайти вчителя за номером або створити новий запис.
+
+    Списку працівників бот не звіряє: людина, якої в ньому немає (новий
+    працівник, інший номер, помилка в імпорті), інакше впиралася б у відмову
+    й мусила шукати адміністратора. Класів у неї немає, доки їх не призначать,
+    тож без цього вона все одно нічого не бачить і запитів не отримує.
+    """
+    existing = await link_by_phone(session, phone, tg_user_id)
+    if existing is not None:
+        return existing
+
+    normalized = normalize_phone(phone)
+
+    # Номер уже закріплений за іншим Telegram-акаунтом (людина завела новий,
+    # або оператор перевидав номер). Запис створюємо без номера: інакше
+    # UNIQUE-обмеження валить реєстрацію, а перезаписувати чужу привʼязку
+    # не можна. Розібратися, хто це, зможе адміністратор.
+    if normalized is not None and await session.scalar(
+        select(Teacher.id).where(Teacher.phone == normalized)
+    ):
+        log.warning("Номер %s уже закріплений за іншим акаунтом", normalized)
+        normalized = None
+
+    teacher = Teacher(tg_user_id=tg_user_id, full_name=fallback_name, phone=normalized)
+    session.add(teacher)
+    await session.flush()
+    return teacher
 
 
 async def link_by_phone(session: AsyncSession, phone: str, tg_user_id: int) -> Teacher | None:
