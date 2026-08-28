@@ -88,7 +88,9 @@ async def today_summary(message: Message, session: AsyncSession) -> None:
     ]
     if summary.submitted:
         lines += ["", "<b>Подано:</b>"]
-        lines += [f"  {s.school_class.name} — {s.count}" for s in summary.submitted]
+        lines += [
+            f"  {texts.esc(s.school_class.name)} — {s.count}" for s in summary.submitted
+        ]
 
     await message.answer(
         "\n".join(lines),
@@ -156,8 +158,8 @@ async def teachers_list(message: Message, session: AsyncSession) -> None:
         else:
             pending = "  ⏳ <i>ще не відкрив бота</i>"
             waiting += 1
-        safe_name = texts.esc(t.full_name)
-        lines.append(f"{crown}<b>{safe_name}</b> — {', '.join(names) or '—'}{pending}")
+        joined = ", ".join(texts.esc(n) for n in names)
+        lines.append(f"{crown}<b>{texts.esc(t.full_name)}</b> — {joined or '—'}{pending}")
         if t.phone:
             lines.append(f"    <code>{format_phone(t.phone)}</code>")
 
@@ -406,7 +408,8 @@ async def classes_list(message: Message, session: AsyncSession) -> None:
                 )
             )
             warn = "" if teacher_names else "  ⚠️ <i>без класного керівника</i>"
-            lines.append(f"<b>{c.name}</b> — {', '.join(teacher_names) or '—'}{warn}")
+            joined = ", ".join(texts.esc(n) for n in teacher_names)
+            lines.append(f"<b>{texts.esc(c.name)}</b> — {joined or '—'}{warn}")
     else:
         lines.append("<i>Поки жодного.</i>")
     lines += ["", "Додати: /add_class", "Прибрати: /off_class"]

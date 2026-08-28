@@ -8,6 +8,8 @@ teacher=None і адмінське меню мовчки не працювало
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 import pytest_asyncio
 from aiogram.types import Contact
@@ -312,12 +314,37 @@ async def test_name_with_html_does_not_break_the_bot(send, people, maker):
     assert saved.full_name == "Іван <Петров> & Сини", "ПІБ мало зберегтися як є"
 
 
-async def test_injected_html_in_name_is_escaped_for_admin(send, people, maker):
-    """Самореєстрація не має відкривати шлях HTML у чат адміністратора."""
+@pytest.mark.parametrize(
+    "screen",
+    [texts.BTN_TEACHERS, texts.BTN_CLASSES, texts.BTN_TODAY],
+)
+async def test_injected_html_in_name_is_escaped_on_every_admin_screen(
+    send, people, maker, screen
+):
+    """Самореєстрація не має відкривати шлях HTML у чат адміністратора.
+
+    Перевіряються всі екрани, де зʼявляються ПІБ або назви класів: спершу
+    екранували лише «Вчителі», а «Класи» показують ті самі ПІБ і лишалися
+    діркою.
+    """
+    from sqlalchemy import select
+
+    from school_bot.db.models import Teacher
+    from school_bot.domain.classes import set_teacher_classes
+    from school_bot.domain.meals import upsert_entry
+
     await send(tg_id=912, contact=_own_contact(912, "+380991110912"))
     await send('<a href="https://example.com">клік</a>', tg_id=912)
 
-    listing = await send(texts.BTN_TEACHERS, tg_id=ADMIN_ID)
-    joined = "\n".join(listing)
-    assert "<a href=" not in joined, "HTML із ПІБ потрапив у повідомлення сирим"
-    assert "&lt;a href=" in joined
+    # Привʼязуємо до класу, щоб ПІБ зʼявилося і в списку класів.
+    async with maker() as s:
+        intruder = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 912))
+        await set_teacher_classes(s, intruder.id, {people["class_id"]})
+        await upsert_entry(
+            s, class_id=people["class_id"], d=date.today(), eating_count=20,
+            teacher_id=intruder.id,
+        )
+        await s.commit()
+
+    joined = "\n".join(await send(screen, tg_id=ADMIN_ID))
+    assert "<a href=" not in joined, f"неекранований HTML на екрані «{screen}»"
