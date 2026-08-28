@@ -22,6 +22,7 @@ ADMIN_COMMANDS = TEACHER_COMMANDS + [
     BotCommand(command="edit_teacher", description="Змінити класи вчителя"),
     BotCommand(command="add_teacher", description="Додати одного вчителя"),
     BotCommand(command="off_teacher", description="Вимкнути вчителя"),
+    BotCommand(command="free_number", description="Звільнити номер для нової людини"),
     BotCommand(command="add_class", description="Додати клас"),
     BotCommand(command="off_class", description="Прибрати клас"),
     BotCommand(command="days_off", description="Позначити канікули"),

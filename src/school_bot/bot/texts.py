@@ -192,10 +192,16 @@ NO_ACTIVE_TEACHERS = "Немає активних вчителів."
 NOTHING_TO_REPORT = "Ще немає жодного запису, тож звітувати нема про що."
 PICK_MONTH = "Оберіть місяць — надішлю XLSX і PDF:"
 PICK_TEACHER_TO_DISABLE = "Кого вимкнути? Дані вчителя зберігаються."
+NO_DISABLED_TEACHERS = "Немає вимкнених вчителів із закріпленим номером."
+PICK_TEACHER_TO_FREE = (
+    "Чий номер звільнити?\n\n"
+    "<i>Це для випадку, коли номер дістався новій людині. Запис втратить "
+    "номер, привʼязку до Telegram, роль і класи — щоб новий власник нічого "
+    "з цього не успадкував.</i>"
+)
 PICK_CLASS_TO_DISABLE = (
     "Який клас прибрати з опитування?\n<i>Історія записів зберігається.</i>"
 )
-NAME_TOO_SHORT = "Надто коротко. Введіть ПІБ повністю:"
 NOTHING_ADDED = "Нічого не додано."
 NO_DAYS_OFF_IN_RANGE = "У цьому діапазоні позначок не було."
 SYNC_IN_PROGRESS = "⏳ Синхронізую…"
@@ -212,6 +218,13 @@ def sync_done(synced: int, total: int) -> str:
     return (
         f"✅ Синхронізовано вкладок: {synced} з {total}\n"
         f"{sheet_url(settings.google_sheet_id or '')}"
+    )
+
+
+def number_freed(name: str) -> str:
+    return (
+        f"✅ Номер запису <b>{esc(name)}</b> звільнено.\n"
+        "Тепер нова людина може зареєструватися з ним."
     )
 
 

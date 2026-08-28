@@ -341,3 +341,50 @@ async def test_reactivating_the_same_person_keeps_role_and_classes(session):
     assert teacher.role is Role.ADMIN, "втрачено роль при поверненні доступу"
     assert teacher.tg_user_id == 600, "втрачено привʼязку до Telegram"
     assert [c.name for c in await classes_for_teacher(session, teacher.id)] == ["3-Б"]
+
+
+async def test_reimport_with_corrected_name_keeps_everything(session):
+    """Виправлення написання ПІБ під час повернення доступу нічого не коштує.
+
+    Евристика «інше імʼя = нова людина» саме тут і ламалася: адміністратор
+    додає по батькові, а людина мовчки втрачає роль, класи й привʼязку.
+    """
+    from school_bot.db.models import Role
+    from school_bot.domain.meals import classes_for_teacher
+    from school_bot.domain.teachers import import_teachers
+
+    await import_teachers(session, "Коваленко Марія, 0671234567, 1-А")
+    teacher = await session.scalar(select(Teacher).where(Teacher.phone == "380671234567"))
+    teacher.role = Role.ADMIN
+    teacher.tg_user_id = 500
+    teacher.is_active = False
+    await session.flush()
+
+    # Повертають доступ і заразом дописують по батькові.
+    await import_teachers(session, "Коваленко Марія Іванівна, 0671234567, 1-А")
+
+    assert teacher.is_active
+    assert teacher.role is Role.ADMIN, "втрачено роль через виправлення ПІБ"
+    assert teacher.tg_user_id == 500, "втрачено привʼязку через виправлення ПІБ"
+    assert [c.name for c in await classes_for_teacher(session, teacher.id)] == ["1-А"]
+    assert teacher.full_name == "Коваленко Марія Іванівна"
+
+
+async def test_free_number_strips_identity_and_rights(session):
+    """Звільнення номера має знімати все, що успадкував би новий власник."""
+    from school_bot.db.models import Role
+    from school_bot.domain.meals import classes_for_teacher
+    from school_bot.domain.teachers import free_number, import_teachers
+
+    await import_teachers(session, "Стара Адмінка, 0671234567, 1-А")
+    teacher = await session.scalar(select(Teacher).where(Teacher.phone == "380671234567"))
+    teacher.role = Role.ADMIN
+    teacher.tg_user_id = 500
+    await session.flush()
+
+    freed = await free_number(session, teacher.id)
+
+    assert freed.phone is None
+    assert freed.tg_user_id is None
+    assert freed.role is Role.TEACHER
+    assert await classes_for_teacher(session, freed.id) == []

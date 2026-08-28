@@ -32,7 +32,7 @@ from school_bot.domain.classes import create_classes, parse_date_range, set_teac
 from school_bot.domain.dates import format_date
 from school_bot.domain.meals import active_classes, classes_for_teacher, day_summary
 from school_bot.domain.phones import format_phone
-from school_bot.domain.teachers import clean_name, import_teachers
+from school_bot.domain.teachers import clean_name, free_number, import_teachers
 from school_bot.reports.matrix import available_months, build_month_matrix
 from school_bot.reports.pdf import render_pdf
 from school_bot.reports.xlsx import render_xlsx
@@ -175,6 +175,7 @@ async def teachers_list(message: Message, session: AsyncSession) -> None:
         "🏫 Змінити класи: /edit_teacher",
         "➕ Додати одного: /add_teacher",
         "🚫 Вимкнути: /off_teacher",
+        "📵 Звільнити номер: /free_number",
     ]
     await message.answer("\n".join(lines))
 
@@ -392,6 +393,39 @@ async def off_teacher(
 
 
 # --- 🏫 Класи -------------------------------------------------------------
+
+
+@router.message(Command("free_number"))
+async def free_number_menu(message: Message, session: AsyncSession) -> None:
+    """Звільнити номер вимкненого вчителя для нової людини."""
+    rows = list(
+        await session.scalars(
+            select(Teacher)
+            .where(Teacher.is_active.is_(False), Teacher.phone.is_not(None))
+            .order_by(Teacher.full_name)
+        )
+    )
+    if not rows:
+        await message.answer(texts.NO_DISABLED_TEACHERS)
+        return
+    await message.answer(
+        texts.PICK_TEACHER_TO_FREE,
+        reply_markup=keyboards.picker(
+            [(t.id, f"{t.full_name} · {format_phone(t.phone)}") for t in rows], "free_number"
+        ),
+    )
+
+
+@router.callback_query(AdminAction.filter(F.action == "free_number"))
+async def free_number_apply(
+    query: CallbackQuery, callback_data: AdminAction, session: AsyncSession
+) -> None:
+    teacher = await free_number(session, int(callback_data.arg))
+    if teacher is None:
+        await query.answer(texts.NOTHING_TO_EDIT, show_alert=True)
+        return
+    await query.message.edit_text(texts.number_freed(teacher.full_name))
+    await query.answer()
 
 
 @router.message(F.text == texts.BTN_CLASSES)

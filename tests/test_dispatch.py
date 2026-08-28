@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from school_bot.bot import texts
 from school_bot.db.models import Role, SchoolClass, Teacher
-from school_bot.domain.teachers import link_by_phone
+from school_bot.domain.teachers import free_number, link_by_phone
 
 ADMIN_ID = 100
 TEACHER_ID = 200
@@ -478,8 +478,10 @@ async def test_recycled_number_frees_up_after_admin_reimport(send, people, maker
     blocked = await send(tg_id=951, contact=_own_contact(951, "+380991110950"))
     assert any("вимкнено" in r for r in blocked)
 
-    # Адміністратор вносить номер у список під новим ПІБ.
+    # Адміністратор явно звільняє номер для нового працівника.
     async with maker() as s:
+        former = await s.scalar(select(Teacher).where(Teacher.phone == "380991110950"))
+        await free_number(s, former.id)
         await import_teachers(s, "Новий Працівник, 0991110950")
         await s.commit()
 
@@ -494,7 +496,7 @@ async def test_recycled_number_frees_up_after_admin_reimport(send, people, maker
     # отримувала порожній дублікат, а реімпортований запис лишався підвішеним
     # під недосяжним tg_user_id. Тому звіряємо саме тотожність запису.
     assert rebound is not None and rebound.is_active
-    assert rebound.full_name == "Новий Працівник", "дістався дублікат, а не реімпортований запис"
+    assert rebound.full_name == "Новий Працівник", "дістався дублікат, а не новий запис"
     assert rebound.phone == "380991110950", "номер лишився за старим записом"
     assert len(everyone) == 1, "номер розʼїхався по двох записах"
 

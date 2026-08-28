@@ -169,26 +169,11 @@ async def import_teachers(
             await session.flush()
             result.created.append(item)
         else:
-            # Той самий запис під іншим ПІБ — номер перевидали новій людині.
-            # Якщо ж ПІБ те саме, адміністратор просто повертає доступ: реімпорт
-            # списку — єдиний спосіб зняти /off_teacher, і він не має коштувати
-            # людині ролі, класів і привʼязки до Telegram.
-            reused = not teacher.is_active and teacher.full_name != item.name
-            if reused:
-                # Адміністратор свідомо повертає цей номер у список, а
-                # попереднього власника було вимкнено. Стара привʼязка до
-                # Telegram веде в нікуди, тож звільняємо номер: інакше нова
-                # людина отримає порожній дублікат, а запис із її ПІБ
-                # і класами назавжди лишиться під недосяжним акаунтом.
-                #
-                # Разом з номером скидаємо роль і класи: це той самий рядок
-                # БД, тож інакше новий працівник мовчки успадкує права
-                # попереднього власника — зокрема адміністраторські.
-                teacher.tg_user_id = None
-                teacher.role = Role.TEACHER
-                await set_teacher_classes(session, teacher.id, set())
-                log.info("Номер %s звільнено для нового власника", teacher.phone)
-
+            # Імпорт нічого не обнуляє. Дві спроби вивести намір із даних —
+            # за is_active, потім за збігом ПІБ — обидві ламалися: адміністратор
+            # то повертає доступ, то заразом виправляє написання ПІБ, і код
+            # не може відрізнити це від «номер дістався новій людині».
+            # Тому звільнення номера — окрема явна дія (/free_number).
             teacher.full_name = item.name
             teacher.is_active = True
             result.updated.append(item)
@@ -261,6 +246,28 @@ async def register_by_phone(
         if existing is None:
             raise
         return existing, False
+
+
+async def free_number(session: AsyncSession, teacher_id: int) -> Teacher | None:
+    """Звільнити номер вимкненого вчителя для нового працівника.
+
+    Явна дія, а не здогад під час імпорту: тільки адміністратор знає, чи
+    номер дістався іншій людині, чи це та сама, якій повертають доступ.
+
+    Разом із номером знімаються привʼязка до Telegram, роль і класи —
+    інакше новий власник мовчки успадкує права попереднього.
+    """
+    teacher = await session.get(Teacher, teacher_id)
+    if teacher is None:
+        return None
+
+    teacher.tg_user_id = None
+    teacher.phone = None
+    teacher.role = Role.TEACHER
+    await set_teacher_classes(session, teacher.id, set())
+    await session.flush()
+    log.info("Звільнено номер і привʼязку запису %s", teacher.full_name)
+    return teacher
 
 
 async def link_by_phone(session: AsyncSession, phone: str, tg_user_id: int) -> Teacher | None:
