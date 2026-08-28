@@ -156,7 +156,8 @@ async def teachers_list(message: Message, session: AsyncSession) -> None:
         else:
             pending = "  ⏳ <i>ще не відкрив бота</i>"
             waiting += 1
-        lines.append(f"{crown}<b>{t.full_name}</b> — {', '.join(names) or '—'}{pending}")
+        safe_name = texts.esc(t.full_name)
+        lines.append(f"{crown}<b>{safe_name}</b> — {', '.join(names) or '—'}{pending}")
         if t.phone:
             lines.append(f"    <code>{format_phone(t.phone)}</code>")
 

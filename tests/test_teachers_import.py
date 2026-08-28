@@ -160,7 +160,8 @@ async def test_register_creates_teacher_for_unknown_phone(session):
     """Номера немає у списку — запис створюється, а не відхиляється."""
     from school_bot.domain.teachers import register_by_phone
 
-    teacher = await register_by_phone(session, "+380991112233", 777, "Вова 🌻")
+    teacher, is_new = await register_by_phone(session, "+380991112233", 777, "Вова 🌻")
+    assert is_new
     assert teacher.tg_user_id == 777
     assert teacher.phone == "380991112233"
     assert teacher.is_active
@@ -173,7 +174,8 @@ async def test_register_returns_existing_when_phone_is_known(session):
     from school_bot.domain.teachers import register_by_phone
 
     await import_teachers(session, LIST)
-    teacher = await register_by_phone(session, "0671234567", 777, "Вова 🌻")
+    teacher, is_new = await register_by_phone(session, "0671234567", 777, "Вова 🌻")
+    assert not is_new
 
     assert teacher.full_name == "Коваленко Марія Іванівна"   # імʼя зі списку, не з Telegram
     assert await session.scalar(select(func.count()).select_from(Teacher)) == 3
@@ -199,7 +201,7 @@ async def test_register_does_not_hijack_someone_elses_number(session):
     await import_teachers(session, LIST)
     await register_by_phone(session, "0671234567", 555, "Перший")
 
-    intruder = await register_by_phone(session, "0671234567", 999, "Другий")
+    intruder, _ = await register_by_phone(session, "0671234567", 999, "Другий")
     assert intruder.tg_user_id == 999
     assert intruder.full_name == "Другий"
     assert intruder.phone is None, "чужу привʼязку до номера перезаписувати не можна"

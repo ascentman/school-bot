@@ -3,9 +3,21 @@
 from __future__ import annotations
 
 from datetime import date as Date
+from html import escape
 
 from school_bot.config import settings
 from school_bot.domain.dates import format_date, plural_children
+
+
+def esc(value: str) -> str:
+    """Екранувати те, що прийшло від людини.
+
+    Бот працює в parse_mode=HTML, а ПІБ відтоді, як зʼявилася самореєстрація,
+    задає будь-хто. Символ «<» ламає розбір сутностей і валить відповідь
+    необробленим TelegramBadRequest; навмисний тег перетворює список вчителів
+    на клікабельне посилання в чаті адміністратора.
+    """
+    return escape(value or "", quote=False)
 
 # --- Доступ ---------------------------------------------------------------
 
@@ -52,9 +64,9 @@ ACCESS_DENIED = "⛔ Ця дія доступна лише адміністра�
 
 
 def welcome(name: str, class_names: list[str], is_admin: bool) -> str:
-    lines = [f"✅ Вітаю, {name}!", ""]
+    lines = [f"✅ Вітаю, {esc(name)}!", ""]
     if class_names:
-        lines.append("Ваші класи: " + ", ".join(class_names))
+        lines.append("Ваші класи: " + ", ".join(esc(n) for n in class_names))
     else:
         # Без класів вчитель не отримає жодного запиту. Якщо про це не сказати,
         # він просто чекатиме й вважатиме, що бот не працює.
@@ -80,7 +92,7 @@ def welcome(name: str, class_names: list[str], is_admin: bool) -> str:
 
 def prompt(class_name: str, d: Date) -> str:
     return (
-        f"📋 <b>{class_name}</b> · {format_date(d, with_weekday=True)}\n\n"
+        f"📋 <b>{esc(class_name)}</b> · {format_date(d, with_weekday=True)}\n\n"
         "Скільки дітей сьогодні харчуються?"
     )
 
@@ -88,14 +100,14 @@ def prompt(class_name: str, d: Date) -> str:
 def prompt_answered(class_name: str, d: Date, count: int, at: str, *, edited: bool = False) -> str:
     head = "✏️ Виправлено" if edited else "✅ Записано"
     return (
-        f"✅ <b>{class_name}</b> · {format_date(d)} — <b>{plural_children(count)}</b>\n"
+        f"✅ <b>{esc(class_name)}</b> · {format_date(d)} — <b>{plural_children(count)}</b>\n"
         f"<i>{head} о {at}.</i>"
     )
 
 
 def reminder(class_name: str, d: Date) -> str:
     return (
-        f"⏰ Нагадування: <b>{class_name}</b> · {format_date(d)}\n\n"
+        f"⏰ Нагадування: <b>{esc(class_name)}</b> · {format_date(d)}\n\n"
         "Дані про харчування ще не подані."
     )
 
@@ -154,7 +166,7 @@ def digest(d: Date, submitted: int, expected: int, total: int, missing: list[str
         f"Разом на харчуванні: <b>{plural_children(total)}</b>",
     ]
     if missing:
-        lines += ["", "❗ Не подали: " + ", ".join(missing)]
+        lines += ["", "❗ Не подали: " + ", ".join(esc(n) for n in missing)]
     else:
         lines += ["", "✅ Усі класи подали дані."]
     return "\n".join(lines)
@@ -189,11 +201,11 @@ def sync_done(synced: int, total: int) -> str:
 
 
 def teacher_disabled(name: str) -> str:
-    return f"✅ {name} — доступ вимкнено."
+    return f"✅ {esc(name)} — доступ вимкнено."
 
 
 def class_disabled(name: str) -> str:
-    return f"✅ {name} прибрано з опитування."
+    return f"✅ {esc(name)} прибрано з опитування."
 
 
 def days_off_cleared(count: int) -> str:
@@ -274,10 +286,10 @@ def import_preview(created: int, updated: int, failed: list[str], classes: list[
     if updated:
         lines.append(f"🔄 Оновлених: <b>{updated}</b>")
     if classes:
-        lines.append(f"🏫 Створено класів: {', '.join(classes)}")
+        lines.append(f"🏫 Створено класів: {', '.join(esc(c) for c in classes)}")
     if failed:
         lines += ["", "⚠️ <b>Не вдалося розібрати:</b>"]
-        lines += [f"  • <code>{line}</code>" for line in failed[:10]]
+        lines += [f"  • <code>{esc(line)}</code>" for line in failed[:10]]
         if len(failed) > 10:
             lines.append(f"  …та ще {len(failed) - 10}")
     return "\n".join(lines)
@@ -299,16 +311,17 @@ TEACHER_PICK_TO_EDIT = "Оберіть вчителя, щоб змінити й�
 
 
 def teacher_edit_classes(name: str) -> str:
-    return f"🏫 Класи вчителя <b>{name}</b>.\nПозначте потрібні та натисніть «Готово»."
+    return f"🏫 Класи вчителя <b>{esc(name)}</b>.\nПозначте потрібні та натисніть «Готово»."
 
 
 def teacher_classes_saved(name: str, class_names: list[str]) -> str:
-    return f"✅ <b>{name}</b> — класи: {', '.join(class_names) or '—'}"
+    joined = ", ".join(esc(n) for n in class_names)
+    return f"✅ <b>{esc(name)}</b> — класи: {joined or '—'}"
 
 
 def invite_created(name: str, link: str) -> str:
     return (
-        f"✅ Вчителя <b>{name}</b> додано.\n\n"
+        f"✅ Вчителя <b>{esc(name)}</b> додано.\n\n"
         f"Надішліть це посилання для реєстрації:\n{link}\n\n"
         "<i>Посилання одноразове.</i>"
     )

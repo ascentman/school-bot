@@ -17,7 +17,7 @@ from school_bot.bot.commands import set_personal_commands
 from school_bot.clock import today
 from school_bot.db.models import Teacher
 from school_bot.domain.meals import classes_for_teacher, get_entry
-from school_bot.domain.teachers import link_by_phone, register_by_phone
+from school_bot.domain.teachers import register_by_phone
 
 log = logging.getLogger(__name__)
 router = Router(name="start")
@@ -125,21 +125,21 @@ async def receive_contact(
         await message.answer(texts.CONTACT_NOT_YOURS, reply_markup=keyboards.share_contact())
         return
 
-    known = await link_by_phone(session, contact.phone_number, message.from_user.id)
-    if known is not None:
-        log.info("Вчитель %s привʼязався за номером", known.full_name)
-        await _greet(message, session, known)
-        return
-
-    # Номера немає у списку — реєструємо самі. Імʼя з Telegram часто нік,
-    # тож одразу просимо ПІБ: саме воно піде у списки й звіти.
-    fresh = await register_by_phone(
+    found, is_new = await register_by_phone(
         session,
         contact.phone_number,
         message.from_user.id,
         fallback_name=message.from_user.full_name,
     )
-    log.info("Самореєстрація: %s (tg=%s)", fresh.full_name, message.from_user.id)
+
+    if not is_new:
+        log.info("Вчитель %s привʼязався за номером", found.full_name)
+        await _greet(message, session, found)
+        return
+
+    # Номера не було у списку. Імʼя з Telegram часто нік, тож одразу просимо
+    # ПІБ: саме воно піде у списки й звіти.
+    log.info("Самореєстрація: %s (tg=%s)", found.full_name, message.from_user.id)
     await state.set_state(SelfRegister.full_name)
     await message.answer(texts.ASK_FULL_NAME, reply_markup=ReplyKeyboardRemove())
 

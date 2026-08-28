@@ -290,3 +290,34 @@ async def test_name_without_letters_is_rejected(send, people, maker):
     async with maker() as s:
         saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 910))
     assert saved.full_name != "12345"
+
+
+async def test_name_with_html_does_not_break_the_bot(send, people, maker):
+    """ПІБ тепер задає будь-хто, а бот працює в parse_mode=HTML.
+
+    Символ «<» у ПІБ ламав розбір сутностей Telegram: відповідь падала
+    необробленим TelegramBadRequest, ПІБ відкочувалося разом із сесією,
+    і людина лишалася без жодної відповіді.
+    """
+    from sqlalchemy import select
+
+    from school_bot.db.models import Teacher
+
+    await send(tg_id=911, contact=_own_contact(911, "+380991110911"))
+    replies = await send("Іван <Петров> & Сини", tg_id=911)
+
+    assert replies, "бот має відповісти, а не впасти"
+    async with maker() as s:
+        saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 911))
+    assert saved.full_name == "Іван <Петров> & Сини", "ПІБ мало зберегтися як є"
+
+
+async def test_injected_html_in_name_is_escaped_for_admin(send, people, maker):
+    """Самореєстрація не має відкривати шлях HTML у чат адміністратора."""
+    await send(tg_id=912, contact=_own_contact(912, "+380991110912"))
+    await send('<a href="https://example.com">клік</a>', tg_id=912)
+
+    listing = await send(texts.BTN_TEACHERS, tg_id=ADMIN_ID)
+    joined = "\n".join(listing)
+    assert "<a href=" not in joined, "HTML із ПІБ потрапив у повідомлення сирим"
+    assert "&lt;a href=" in joined

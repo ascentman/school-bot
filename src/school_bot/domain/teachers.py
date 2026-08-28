@@ -160,24 +160,27 @@ async def import_teachers(
 
 async def register_by_phone(
     session: AsyncSession, phone: str, tg_user_id: int, fallback_name: str
-) -> Teacher:
+) -> tuple[Teacher, bool]:
     """Знайти вчителя за номером або створити новий запис.
 
     Списку працівників бот не звіряє: людина, якої в ньому немає (новий
     працівник, інший номер, помилка в імпорті), інакше впиралася б у відмову
     й мусила шукати адміністратора. Класів у неї немає, доки їх не призначать,
     тож без цього вона все одно нічого не бачить і запитів не отримує.
+
+    Повертає (запис, чи_створено_щойно) — від цього залежить, вітати людину
+    чи спершу спитати ПІБ.
     """
     existing = await link_by_phone(session, phone, tg_user_id)
     if existing is not None:
-        return existing
+        return existing, False
 
     # Запис за цим Telegram-акаунтом уже є, але link_by_phone його не побачила —
     # він вимкнений. Створювати другий не можна: tg_user_id унікальний,
     # і вставка падає з IntegrityError.
     stale = await session.scalar(select(Teacher).where(Teacher.tg_user_id == tg_user_id))
     if stale is not None:
-        return stale
+        return stale, False
 
     normalized = normalize_phone(phone)
 
@@ -194,7 +197,7 @@ async def register_by_phone(
     teacher = Teacher(tg_user_id=tg_user_id, full_name=fallback_name, phone=normalized)
     session.add(teacher)
     await session.flush()
-    return teacher
+    return teacher, True
 
 
 async def link_by_phone(session: AsyncSession, phone: str, tg_user_id: int) -> Teacher | None:
