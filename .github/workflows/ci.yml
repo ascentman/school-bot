@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Встановити залежності
+        run: uv sync --frozen
+
+      - name: Ruff
+        run: uv run ruff check src/ tests/ conftest.py
+
+      - name: Тести
+        run: uv run pytest -q
+        env:
+          # Тести мають бачити дефолти з коду, а не чийсь .env.
+          SCHOOL_BOT_NO_DOTENV: "1"
+
+      - name: Міграції відповідають моделям
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///./ci.db
