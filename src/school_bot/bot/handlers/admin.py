@@ -20,8 +20,6 @@ from school_bot.bot.filters import IsAdmin
 from school_bot.clock import today
 from school_bot.config import settings
 from school_bot.db.models import (
-    MAX_NAME_LEN,
-    MIN_NAME_LEN,
     UA_DAY_KIND,
     ClassAssignment,
     DayKind,
@@ -34,7 +32,7 @@ from school_bot.domain.classes import create_classes, parse_date_range, set_teac
 from school_bot.domain.dates import format_date
 from school_bot.domain.meals import active_classes, classes_for_teacher, day_summary
 from school_bot.domain.phones import format_phone
-from school_bot.domain.teachers import import_teachers
+from school_bot.domain.teachers import clean_name, import_teachers
 from school_bot.reports.matrix import available_months, build_month_matrix
 from school_bot.reports.pdf import render_pdf
 from school_bot.reports.xlsx import render_xlsx
@@ -284,12 +282,9 @@ async def add_teacher_start(message: Message, state: FSMContext) -> None:
 
 @router.message(AddTeacher.name)
 async def add_teacher_name(message: Message, session: AsyncSession, state: FSMContext) -> None:
-    name = " ".join((message.text or "").split())
-    if len(name) < MIN_NAME_LEN:
-        await message.answer(texts.NAME_TOO_SHORT)
-        return
-    if len(name) > MAX_NAME_LEN:
-        await message.answer(texts.NAME_TOO_LONG)
+    name, why = clean_name(message.text)
+    if why:
+        await message.answer(texts.name_rejected(why))
         return
 
     classes = await active_classes(session)

@@ -279,3 +279,40 @@ async def test_import_rejects_absurdly_long_name(session):
     result = await import_teachers(session, "Я" * 3000 + ", 0671234567")
     assert result.created == []
     assert len(result.failed) == 1
+
+
+async def test_all_input_paths_share_one_validation(session):
+    """Валідація ПІБ має бути спільною, а не своя в кожній точці вводу."""
+    from school_bot.domain.teachers import (
+        NAME_NO_LETTERS,
+        NAME_TOO_LONG,
+        NAME_TOO_SHORT,
+        clean_name,
+        parse_teacher_list,
+    )
+
+    assert clean_name("  Коваленко\nМарія  ") == ("Коваленко Марія", None)
+    assert clean_name("Ок")[1] == NAME_TOO_SHORT
+    assert clean_name("Я" * 3000)[1] == NAME_TOO_LONG
+    assert clean_name("12345")[1] == NAME_NO_LETTERS
+
+    # Той самий ввід через розбір списку відхиляється з тієї ж причини.
+    (parsed,) = parse_teacher_list("12345678, 0671234567")
+    assert parsed.error == NAME_NO_LETTERS
+
+
+async def test_double_contact_does_not_crash_registration(session):
+    """Подвійний тап по «Поділитися номером» не має валити сесію.
+
+    tg_user_id і phone унікальні; без savepoint другий flush падав
+    IntegrityError, і людина зависала посеред реєстрації.
+    """
+    from school_bot.domain.teachers import register_by_phone
+
+    first, is_new = await register_by_phone(session, "+380991112233", 777, "Вова")
+    assert is_new
+
+    # Імітуємо повторну доставку: запис уже є, але виклик той самий.
+    second, again = await register_by_phone(session, "+380991112233", 777, "Вова")
+    assert not again
+    assert second.id == first.id

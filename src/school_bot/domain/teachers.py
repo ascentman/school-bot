@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from school_bot.db.models import MAX_NAME_LEN, MIN_NAME_LEN, Role, SchoolClass, Teacher
@@ -26,6 +27,25 @@ from school_bot.domain.phones import looks_like_phone, normalize_phone
 log = logging.getLogger(__name__)
 
 SEPARATORS = re.compile(r"[,;\t|]+")
+
+# Причини, з яких ПІБ не приймається. Спільні для всіх точок вводу —
+# самореєстрації, /add_teacher і розбору списку: інакше кожна перевіряє
+# своє, і адміністратор може завести вчителя з ПІБ «12345».
+NAME_TOO_SHORT = "надто коротке імʼя"
+NAME_TOO_LONG = "задовге імʼя"
+NAME_NO_LETTERS = "імʼя без літер"
+
+
+def clean_name(raw: str | None) -> tuple[str, str | None]:
+    """Нормалізувати ПІБ і перевірити. Повертає (значення, причина відмови)."""
+    name = " ".join((raw or "").split())
+    if len(name) < MIN_NAME_LEN:
+        return name, NAME_TOO_SHORT
+    if len(name) > MAX_NAME_LEN:
+        return name, NAME_TOO_LONG
+    if not any(ch.isalpha() for ch in name):
+        return name, NAME_NO_LETTERS
+    return name, None
 
 
 @dataclass(slots=True)
@@ -68,13 +88,11 @@ def parse_line(line: str) -> ParsedTeacher | None:
 
     if not parsed.name:
         parsed.error = "не знайдено імені"
-    elif len(parsed.name) < MIN_NAME_LEN:
-        parsed.error = "надто коротке імʼя"
-    elif len(parsed.name) > MAX_NAME_LEN:
-        # Той самий краш, заради якого межа й зʼявилася: биття в CSV дає
-        # рядок з валідним номером і величезним «іменем», а списки вчителів
-        # потім не влазять у ліміт повідомлення Telegram.
-        parsed.error = "задовге імʼя"
+        return parsed
+
+    parsed.name, why = clean_name(parsed.name)
+    if why:
+        parsed.error = why
     elif parsed.phone is None:
         parsed.error = "не знайдено номера"
     return parsed
@@ -218,9 +236,22 @@ async def register_by_phone(
         normalized = None
 
     teacher = Teacher(tg_user_id=tg_user_id, full_name=fallback_name, phone=normalized)
-    session.add(teacher)
-    await session.flush()
-    return teacher, True
+    try:
+        # Savepoint: подвійний тап по «Поділитися номером» (або повторна
+        # доставка апдейта Telegram) дає два одночасні вставки з тим самим
+        # tg_user_id. Без цього другий flush валить усю сесію, і людина
+        # зависає посеред реєстрації без жодної відповіді.
+        async with session.begin_nested():
+            session.add(teacher)
+        return teacher, True
+    except IntegrityError:
+        log.info("Повторна реєстрація tg=%s — беру наявний запис", tg_user_id)
+        existing = await session.scalar(
+            select(Teacher).where(Teacher.tg_user_id == tg_user_id)
+        )
+        if existing is None:
+            raise
+        return existing, False
 
 
 async def link_by_phone(session: AsyncSession, phone: str, tg_user_id: int) -> Teacher | None:

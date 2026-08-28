@@ -44,10 +44,15 @@ ACCOUNT_DISABLED = (
     "⛔ Ваш доступ вимкнено адміністратором.\n"
     "Якщо це помилка — зверніться до нього."
 )
-NAME_TOO_LONG = f"❗ Задовге ПІБ. Максимум — {MAX_NAME_LEN} символів."
-NAME_NEEDS_LETTERS = (
-    "❗ Схоже, це не ПІБ. Напишіть прізвище, імʼя та по батькові словами."
-)
+def name_rejected(reason: str) -> str:
+    """Пояснення, чому ПІБ не прийнято. Причини — з domain.teachers."""
+    from school_bot.domain.teachers import NAME_NO_LETTERS, NAME_TOO_LONG
+
+    if reason == NAME_TOO_LONG:
+        return f"❗ Задовге ПІБ. Максимум — {MAX_NAME_LEN} символів."
+    if reason == NAME_NO_LETTERS:
+        return "❗ Схоже, це не ПІБ. Напишіть прізвище, імʼя та по батькові словами."
+    return "Надто коротко. Введіть ПІБ повністю:"
 def name_postponed(current: str) -> str:
     """Показати, як людина записана зараз.
 
