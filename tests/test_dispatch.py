@@ -486,3 +486,36 @@ async def test_recycled_number_frees_up_after_admin_reimport(send, people, maker
     async with maker() as s:
         rebound = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 951))
     assert rebound is not None and rebound.is_active
+
+
+async def test_start_while_waiting_for_name_does_not_finish_silently(send, people, maker):
+    """/start — типова дія «почати спочатку», і вона не має лишати нік як ПІБ."""
+    from sqlalchemy import select
+
+    from school_bot.db.models import Teacher
+
+    await send(tg_id=960, contact=_own_contact(960, "+380991110960"), name="Вова 🌻")
+    replies = await send("/start", tg_id=960)
+
+    assert any("ПІБ" in r for r in replies), replies
+
+    # Стан збережено: наступне повідомлення все ще приймається як ПІБ.
+    await send("Бондаренко Ольга Василівна", tg_id=960)
+    async with maker() as s:
+        saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 960))
+    assert saved.full_name == "Бондаренко Ольга Василівна"
+
+
+async def test_multiline_name_is_collapsed(send, people, maker):
+    """ПІБ у кілька рядків ламає однорядковий формат списків вчителів і класів."""
+    from sqlalchemy import select
+
+    from school_bot.db.models import Teacher
+
+    await send(tg_id=961, contact=_own_contact(961, "+380991110961"))
+    await send("Гнатюк\nЛеся\n\nАндріївна", tg_id=961)
+
+    async with maker() as s:
+        saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 961))
+    assert "\n" not in saved.full_name
+    assert saved.full_name == "Гнатюк Леся Андріївна"

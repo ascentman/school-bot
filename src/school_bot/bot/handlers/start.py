@@ -29,6 +29,19 @@ class SelfRegister(StatesGroup):
 INVITE_PREFIX = "inv_"
 
 
+async def _still_needs_name(message: Message, state: FSMContext) -> bool:
+    """Чи бот саме зараз чекає ПІБ.
+
+    Точок входу, які інакше завершили б реєстрацію під ніком з Telegram,
+    кілька: /start, повторний контакт, інвайт-посилання. Кожна з них має
+    спершу спитати про це.
+    """
+    if await state.get_state() != SelfRegister.full_name:
+        return False
+    await message.answer(texts.ASK_FULL_NAME, reply_markup=ReplyKeyboardRemove())
+    return True
+
+
 async def _greet(message: Message, session: AsyncSession, teacher: Teacher) -> None:
     # Меню команд виставляється персонально: вчитель не має бачити адмінські
     # пункти, які для нього все одно не спрацюють.
@@ -52,6 +65,9 @@ async def start_with_invite(
     teacher: Teacher | None,
     state: FSMContext,
 ) -> None:
+    if await _still_needs_name(message, state):
+        return
+
     await state.clear()
     payload = (command.args or "").strip()
 
@@ -87,6 +103,9 @@ async def start_plain(
     teacher: Teacher | None,
     state: FSMContext,
 ) -> None:
+    if await _still_needs_name(message, state):
+        return
+
     await state.clear()
     if teacher is not None and teacher.is_active:
         await _greet(message, session, teacher)
@@ -109,8 +128,7 @@ async def receive_contact(
     # Контакт, надісланий повторно, поки бот чекає ПІБ: запис уже створено,
     # тож інакше спрацювало б звичайне привітання — під ніком з Telegram
     # і без жодної згадки, що ПІБ так і не вказане.
-    if await state.get_state() == SelfRegister.full_name:
-        await message.answer(texts.ASK_FULL_NAME, reply_markup=ReplyKeyboardRemove())
+    if await _still_needs_name(message, state):
         return
 
     await state.clear()
@@ -172,7 +190,9 @@ async def change_name_start(message: Message, state: FSMContext) -> None:
 async def receive_full_name(
     message: Message, session: AsyncSession, teacher: Teacher, state: FSMContext
 ) -> None:
-    name = (message.text or "").strip()
+    # Схлопуємо переноси: ПІБ у кілька рядків ламає однорядковий формат
+    # списків вчителів і класів.
+    name = " ".join((message.text or "").split())
     if len(name) < 3:
         await message.answer(texts.NAME_TOO_SHORT)
         return
