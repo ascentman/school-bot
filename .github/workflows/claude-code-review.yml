@@ -10,21 +10,50 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      pull-requests: read
-      issues: read
+      # write, щоб рецензія могла опублікувати знайдене коментарем у PR
+      pull-requests: write
+      issues: write
       id-token: write
+
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 1
+          # Повна історія: рецензія порівнює PR із базовою гілкою, а в
+          # неглибокому клоні базового коміта для порівняння просто немає.
+          fetch-depth: 0
 
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
-          plugins: "code-review@claude-code-plugins"
-          prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
-          # --allowedTools обовʼязковий: без нього не піднімається MCP-сервер,
-          # який публікує inline-коментарі, і рецензія осідає лише в логах.
+          # Прямий промпт замість плагіна code-review: той делегує роботу
+          # асинхронним підагентам і чекає на них, але сесія завершується
+          # раніше, ніж вони відзвітують — і прогін не публікує нічого.
+          prompt: |
+            Review pull request #${{ github.event.pull_request.number }} of
+            ${{ github.repository }} and post your findings as a PR comment.
+
+            Do the work yourself in this session. Do not delegate to subagents,
+            do not launch background tasks, and do not wait on anything — the
+            session ends as soon as you stop, so delegated work never reports.
+
+            Steps:
+            1. Read the diff: `gh pr diff ${{ github.event.pull_request.number }}`
+            2. Read any file you need more context on.
+            3. Post exactly one comment with:
+               `gh pr comment ${{ github.event.pull_request.number }} --body "..."`
+
+            Look for correctness bugs, missed edge cases, error handling gaps,
+            and simplifications. Anchor each finding to a file and line, and say
+            what would actually go wrong. Skip style nits the linter catches.
+            If you find nothing substantive, say so in one line — always post a
+            comment, so a green run is distinguishable from a broken one.
+
+            The project is a Telegram bot in Python. Comments and user-facing
+            strings are in Ukrainian; write your review in Ukrainian too.
+          # Показує окремі виклики інструментів, щоб прогін, який нічого не
+          # відрецензував, можна було діагностувати за логом, а не вгадувати.
           show_full_output: true
-          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment"'
+          # Без цього перший же виклик інструмента блокується. --allowedTools
+          # тут не годиться: він замінив би власний список інструментів
+          # екшену, зокрема ті, якими публікується коментар.
+          claude_args: '--permission-mode bypassPermissions'
