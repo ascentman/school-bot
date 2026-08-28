@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from school_bot.bot.commands import ADMIN_COMMANDS, TEACHER_COMMANDS
 
-TEACHER_ALLOWED = {"start", "today", "help"}
+TEACHER_ALLOWED = {"start", "today", "name", "help"}
 
 # Диспетчер приходить із conftest: роутери — модульні синглтони, тож він
 # збирається один раз на всю сесію тестів.

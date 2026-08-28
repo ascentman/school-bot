@@ -112,6 +112,12 @@ async def receive_contact(
         await _greet(message, session, teacher)
         return
 
+    # Доступ вимкнув адміністратор — повторний контакт не має його повертати,
+    # інакше /off_teacher нічого не значить.
+    if teacher is not None and not teacher.is_active:
+        await message.answer(texts.ACCOUNT_DISABLED, reply_markup=ReplyKeyboardRemove())
+        return
+
     contact = message.contact
     # Telegram дозволяє надіслати чужий контакт із адресної книги — без цієї
     # перевірки будь-хто зміг би зайти під обліковим записом вчителя.
@@ -138,13 +144,16 @@ async def receive_contact(
     await message.answer(texts.ASK_FULL_NAME, reply_markup=ReplyKeyboardRemove())
 
 
-@router.message(SelfRegister.full_name)
+@router.message(SelfRegister.full_name, F.text.regexp(r"^\s*[^/]"))
 async def receive_full_name(
     message: Message, session: AsyncSession, teacher: Teacher, state: FSMContext
 ) -> None:
     name = (message.text or "").strip()
     if len(name) < 3:
         await message.answer(texts.NAME_TOO_SHORT)
+        return
+    if not any(ch.isalpha() for ch in name):
+        await message.answer(texts.NAME_NEEDS_LETTERS)
         return
 
     teacher.full_name = name
@@ -154,6 +163,24 @@ async def receive_full_name(
 
     await message.answer(texts.NAME_ACCEPTED)
     await _greet(message, session, teacher)
+
+
+@router.message(SelfRegister.full_name)
+async def skip_full_name(message: Message, state: FSMContext) -> None:
+    """Будь-що, крім тексту з ПІБ, виводить зі стану очікування.
+
+    Інакше хендлер стану ковтав команди: /help зберігався як ПІБ, сама
+    команда не спрацьовувала, а вийти зі стану було нічим.
+    """
+    await state.clear()
+    await message.answer(texts.NAME_POSTPONED)
+
+
+@router.message(Command("name"))
+async def change_name_start(message: Message, state: FSMContext) -> None:
+    """Змінити власне ПІБ. Заодно вихід із ситуації, коли реєстрацію відклали."""
+    await state.set_state(SelfRegister.full_name)
+    await message.answer(texts.ASK_NAME_AGAIN)
 
 
 @router.message(F.text == texts.BTN_MY_CLASSES)

@@ -172,6 +172,13 @@ async def register_by_phone(
     if existing is not None:
         return existing
 
+    # Запис за цим Telegram-акаунтом уже є, але link_by_phone його не побачила —
+    # він вимкнений. Створювати другий не можна: tg_user_id унікальний,
+    # і вставка падає з IntegrityError.
+    stale = await session.scalar(select(Teacher).where(Teacher.tg_user_id == tg_user_id))
+    if stale is not None:
+        return stale
+
     normalized = normalize_phone(phone)
 
     # Номер уже закріплений за іншим Telegram-акаунтом (людина завела новий,

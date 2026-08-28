@@ -188,3 +188,105 @@ async def test_someone_elses_contact_is_still_refused(send, people, maker):
     assert any("контакт іншої людини" in r for r in replies)
     async with maker() as s:
         assert await s.scalar(select(Teacher).where(Teacher.tg_user_id == 904)) is None
+
+
+async def test_deactivated_teacher_resharing_contact_does_not_crash(send, maker):
+    """Вимкнений вчитель ділиться контактом — не має бути краху.
+
+    link_by_phone шукає лише серед активних, тож повертає None. Спроба
+    створити новий запис з тим самим tg_user_id падала на UNIQUE.
+    """
+    from school_bot.db.models import Role, Teacher
+
+    async with maker() as s:
+        s.add(
+            Teacher(
+                full_name="Вимкнений",
+                tg_user_id=905,
+                phone="380991110905",
+                role=Role.TEACHER,
+                is_active=False,
+            )
+        )
+        await s.commit()
+
+    replies = await send(tg_id=905, contact=_own_contact(905, "+380991110905"))
+    assert replies, "бот має щось відповісти, а не впасти"
+    assert any("вимкнено" in r for r in replies), replies
+
+
+async def test_command_is_not_swallowed_as_a_name(send, people, maker):
+    """У стані очікування ПІБ команда не має записуватися як імʼя."""
+    from sqlalchemy import select
+
+    from school_bot.db.models import Teacher
+
+    await send(tg_id=906, contact=_own_contact(906, "+380991110906"))
+    await send("/help", tg_id=906)
+
+    async with maker() as s:
+        saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 906))
+    assert saved.full_name != "/help", "команда потрапила в ПІБ"
+
+
+async def test_deactivated_teacher_is_not_reactivated(send, maker):
+    """/off_teacher має щось означати: повторна реєстрація не повертає доступ."""
+    from sqlalchemy import select
+
+    from school_bot.db.models import Role, Teacher
+
+    async with maker() as s:
+        s.add(
+            Teacher(
+                full_name="Вимкнений",
+                tg_user_id=907,
+                phone="380991110907",
+                role=Role.TEACHER,
+                is_active=False,
+            )
+        )
+        await s.commit()
+
+    await send(tg_id=907, contact=_own_contact(907, "+380991110907"))
+    async with maker() as s:
+        after = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 907))
+    assert not after.is_active
+
+
+async def test_command_in_name_state_leaves_the_state(send, people, maker):
+    """Після команди стан скидається, і бот знову слухає звичайні команди."""
+    await send(tg_id=908, contact=_own_contact(908, "+380991110908"))
+    postponed = await send("/help", tg_id=908)
+    assert any("можна вказати згодом" in r for r in postponed)
+
+    # Тепер /help має спрацювати нормально.
+    assert any("Як це працює" in r for r in await send("/help", tg_id=908))
+
+
+async def test_name_command_lets_teacher_fix_it_later(send, people, maker):
+    from sqlalchemy import select
+
+    from school_bot.db.models import Teacher
+
+    await send(tg_id=909, contact=_own_contact(909, "+380991110909"), name="Вова 🌻")
+    await send("/help", tg_id=909)                       # відклали
+
+    assert any("ПІБ" in r for r in await send("/name", tg_id=909))
+    await send("Кравець Юрій Миколайович", tg_id=909)
+
+    async with maker() as s:
+        saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 909))
+    assert saved.full_name == "Кравець Юрій Миколайович"
+
+
+async def test_name_without_letters_is_rejected(send, people, maker):
+    from sqlalchemy import select
+
+    from school_bot.db.models import Teacher
+
+    await send(tg_id=910, contact=_own_contact(910, "+380991110910"))
+    assert any("не ПІБ" in r for r in await send("12345", tg_id=910))
+
+    async with maker() as s:
+        saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 910))
+    assert saved.full_name != "12345"
