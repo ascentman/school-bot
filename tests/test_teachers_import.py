@@ -209,3 +209,56 @@ async def test_register_does_not_hijack_someone_elses_number(session):
     maria = await session.scalar(select(Teacher).where(Teacher.tg_user_id == 555))
     assert maria.full_name == "Коваленко Марія Іванівна"
     assert await session.scalar(select(func.count()).select_from(Teacher)) == 4
+
+
+async def test_recycled_number_does_not_inherit_role_or_classes(session):
+    """Новий власник номера не має успадкувати права попереднього.
+
+    Це той самий рядок БД, тож без скидання нова людина мовчки отримувала
+    роль адміністратора й чужі класи.
+    """
+    from school_bot.db.models import Role, SchoolClass
+    from school_bot.domain.classes import set_teacher_classes
+    from school_bot.domain.meals import classes_for_teacher
+    from school_bot.domain.teachers import import_teachers, register_by_phone
+
+    klass = SchoolClass(name="1-А", grade=1, letter="А", sort_order=1)
+    former = Teacher(
+        full_name="Стара Адмінка",
+        tg_user_id=800,
+        phone="380671234567",
+        role=Role.ADMIN,
+        is_active=False,
+    )
+    session.add_all([klass, former])
+    await session.flush()
+    await set_teacher_classes(session, former.id, {klass.id})
+
+    await import_teachers(session, "Новий Працівник, 0671234567")
+    newcomer, _ = await register_by_phone(session, "0671234567", 801, "Тест")
+
+    assert newcomer.role is Role.TEACHER, "успадкував роль адміністратора"
+    assert await classes_for_teacher(session, newcomer.id) == [], "успадкував чужі класи"
+
+
+async def test_reimport_keeps_role_and_classes_of_an_active_teacher(session):
+    """Скидання стосується лише вимкнених записів.
+
+    Інакше повторний імпорт списку знімав би права адміністратора
+    й класи з чинних вчителів.
+    """
+    from school_bot.db.models import Role
+    from school_bot.domain.meals import classes_for_teacher
+    from school_bot.domain.teachers import import_teachers
+
+    await import_teachers(session, "Коваленко Марія, 0671234567, 1-А")
+    teacher = await session.scalar(select(Teacher).where(Teacher.phone == "380671234567"))
+    teacher.role = Role.ADMIN
+    teacher.tg_user_id = 500
+    await session.flush()
+
+    await import_teachers(session, "Коваленко Марія Іванівна, 0671234567")
+
+    assert teacher.role is Role.ADMIN, "знято права з чинного адміністратора"
+    assert teacher.tg_user_id == 500
+    assert [c.name for c in await classes_for_teacher(session, teacher.id)] == ["1-А"]

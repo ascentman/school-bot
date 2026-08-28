@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from school_bot.db.models import SchoolClass, Teacher
+from school_bot.db.models import Role, SchoolClass, Teacher
 from school_bot.domain.classes import (
     CLASS_RE,
     create_classes,
@@ -146,14 +146,22 @@ async def import_teachers(
             await session.flush()
             result.created.append(item)
         else:
-            if not teacher.is_active:
+            reused = not teacher.is_active
+            if reused:
                 # Адміністратор свідомо повертає цей номер у список, а
                 # попереднього власника було вимкнено. Стара привʼязка до
                 # Telegram веде в нікуди, тож звільняємо номер: інакше нова
                 # людина отримає порожній дублікат, а запис із її ПІБ
                 # і класами назавжди лишиться під недосяжним акаунтом.
+                #
+                # Разом з номером скидаємо роль і класи: це той самий рядок
+                # БД, тож інакше новий працівник мовчки успадкує права
+                # попереднього власника — зокрема адміністраторські.
                 teacher.tg_user_id = None
+                teacher.role = Role.TEACHER
+                await set_teacher_classes(session, teacher.id, set())
                 log.info("Номер %s звільнено для нового власника", teacher.phone)
+
             teacher.full_name = item.name
             teacher.is_active = True
             result.updated.append(item)
