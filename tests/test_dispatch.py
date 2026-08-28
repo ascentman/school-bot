@@ -601,3 +601,17 @@ async def test_disabling_during_registration_does_not_loop(send, people, maker):
     replies = await send("/start", tg_id=980)
     assert not any("ПІБ" in r for r in replies), f"бот просить ПІБ у вимкненого: {replies}"
     assert any("вимкнено" in r for r in replies), replies
+
+
+async def test_name_during_initial_registration_is_not_a_change(send, people):
+    """/name під час первинної реєстрації — не зміна вже наявного ПІБ.
+
+    Інакше відмова показує «лишив ПІБ без змін», хоча насправді в записі
+    досі нік із Telegram, і людина вирішить, що ПІБ у неї нормальне.
+    """
+    await send(tg_id=990, contact=_own_contact(990, "+380991110990"), name="Вова 🌻")
+    await send("/name", tg_id=990)
+    replies = await send("/help", tg_id=990)
+
+    assert not any("без змін" in r for r in replies), replies
+    assert any("згодом" in r for r in replies), replies

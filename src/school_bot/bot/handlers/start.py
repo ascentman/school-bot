@@ -192,8 +192,13 @@ async def change_name_start(message: Message, state: FSMContext) -> None:
     Зареєстровано ДО хендлерів стану: інакше skip_full_name перехоплював
     /name разом з усім іншим, і команда спрацьовувала лише з другого разу.
     """
+    # «Зміна» — лише коли ПІБ уже нормальне. Якщо первинна реєстрація ще
+    # триває, у записі досі нік із Telegram, і відмова має казати «вкажете
+    # згодом», а не «лишив без змін».
+    data = await state.get_data()
+    registering = await state.get_state() == SelfRegister.full_name
     await state.set_state(SelfRegister.full_name)
-    await state.update_data(changing=True)
+    await state.update_data(changing=data.get("changing", not registering))
     await message.answer(texts.ASK_NAME_AGAIN)
 
 
