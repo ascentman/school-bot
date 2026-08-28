@@ -111,3 +111,91 @@ def test_no_hardcoded_schedule_in_user_texts():
     without_interpolation = re.sub(r"\{[^}]*\}", "", texts_src)
     hardcoded = re.findall(r"\b([01]?\d|2[0-3]):[0-5]\d\b", without_interpolation)
     assert not hardcoded, f"У текстах зашитий час: {hardcoded}"
+
+
+PAYLOAD = '<a href="https://example.com">клік</a>'
+
+
+def _synth(annotation, name: str):
+    """Підібрати аргумент за анотацією; рядки — з HTML-payload."""
+    from datetime import date
+
+    origin = getattr(annotation, "__origin__", None)
+    if annotation is str:
+        return PAYLOAD
+    if annotation is int:
+        return 3
+    if annotation is bool:
+        return False
+    if annotation is date:
+        return date(2026, 9, 1)
+    if origin is list:
+        return [PAYLOAD]
+    return PAYLOAD
+
+
+def test_every_texts_function_escapes_its_input():
+    """Прогнати HTML-payload через УСІ функції texts, а не через обраний список.
+
+    Точковий перелік уже тричі пропускав неекрановані місця: спершу
+    prompt_answered, потім classes_list, потім classes_added.
+    """
+    import inspect
+
+    from school_bot.bot import texts as texts_module
+
+    checked = []
+    for fname, fn in vars(texts_module).items():
+        if fname.startswith("_") or fname == "esc" or not inspect.isfunction(fn):
+            continue
+        if fn.__module__ != texts_module.__name__:
+            continue
+
+        hints = inspect.get_annotations(fn, eval_str=True)
+        try:
+            kwargs = {
+                pname: _synth(hints.get(pname, str), pname)
+                for pname in inspect.signature(fn).parameters
+            }
+            rendered = fn(**kwargs)
+        except Exception:  # noqa: BLE001 — функції з нерядковими аргументами пропускаємо
+            continue
+
+        if isinstance(rendered, str):
+            checked.append(fname)
+            assert "<a href=" not in rendered, f"texts.{fname} не екранує ввід"
+
+    assert len(checked) >= 8, f"перевірено замало функцій: {checked}"
+
+
+def test_user_controlled_text_is_escaped():
+    """Кожен текст, у який підставляється введене людиною, має екрануватися.
+
+    Бот працює в parse_mode=HTML, а ПІБ відтоді, як зʼявилася самореєстрація,
+    задає будь-хто: «<» валить відповідь, а тег перетворює список вчителів
+    на клікабельне посилання в чаті адміністратора.
+    """
+    from datetime import date
+
+    from school_bot.bot import texts
+
+    payload = '<a href="https://example.com">клік</a>'
+    rendered = [
+        texts.welcome(payload, ["1-А"], False),
+        texts.teacher_disabled(payload),
+        texts.class_disabled(payload),
+        texts.teacher_edit_classes(payload),
+        texts.teacher_classes_saved(payload, ["1-А"]),
+        texts.invite_created(payload, "https://t.me/bot"),
+        texts.import_preview(created=0, updated=0, failed=[payload], classes=[]),
+        texts.prompt_answered(payload, date(2026, 9, 1), 20, "09:05"),
+    ]
+    for text in rendered:
+        assert "<a href=" not in text, f"неекранований HTML у: {text[:70]}"
+
+
+def test_escape_keeps_ordinary_names_readable():
+    from school_bot.bot import texts
+
+    assert "Коваленко Марія Іванівна" in texts.welcome("Коваленко Марія Іванівна", [], False)
+    assert texts.esc("Оʼ Коннор") == "Оʼ Коннор"

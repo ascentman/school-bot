@@ -32,7 +32,7 @@ from school_bot.domain.classes import create_classes, parse_date_range, set_teac
 from school_bot.domain.dates import format_date
 from school_bot.domain.meals import active_classes, classes_for_teacher, day_summary
 from school_bot.domain.phones import format_phone
-from school_bot.domain.teachers import import_teachers
+from school_bot.domain.teachers import clean_name, free_number, import_teachers
 from school_bot.reports.matrix import available_months, build_month_matrix
 from school_bot.reports.pdf import render_pdf
 from school_bot.reports.xlsx import render_xlsx
@@ -88,7 +88,9 @@ async def today_summary(message: Message, session: AsyncSession) -> None:
     ]
     if summary.submitted:
         lines += ["", "<b>Подано:</b>"]
-        lines += [f"  {s.school_class.name} — {s.count}" for s in summary.submitted]
+        lines += [
+            f"  {texts.esc(s.school_class.name)} — {s.count}" for s in summary.submitted
+        ]
 
     await message.answer(
         "\n".join(lines),
@@ -156,7 +158,8 @@ async def teachers_list(message: Message, session: AsyncSession) -> None:
         else:
             pending = "  ⏳ <i>ще не відкрив бота</i>"
             waiting += 1
-        lines.append(f"{crown}<b>{t.full_name}</b> — {', '.join(names) or '—'}{pending}")
+        joined = ", ".join(texts.esc(n) for n in names)
+        lines.append(f"{crown}<b>{texts.esc(t.full_name)}</b> — {joined or '—'}{pending}")
         if t.phone:
             lines.append(f"    <code>{format_phone(t.phone)}</code>")
 
@@ -172,6 +175,7 @@ async def teachers_list(message: Message, session: AsyncSession) -> None:
         "🏫 Змінити класи: /edit_teacher",
         "➕ Додати одного: /add_teacher",
         "🚫 Вимкнути: /off_teacher",
+        "📵 Звільнити номер: /free_number",
     ]
     await message.answer("\n".join(lines))
 
@@ -279,9 +283,9 @@ async def add_teacher_start(message: Message, state: FSMContext) -> None:
 
 @router.message(AddTeacher.name)
 async def add_teacher_name(message: Message, session: AsyncSession, state: FSMContext) -> None:
-    name = (message.text or "").strip()
-    if len(name) < 3:
-        await message.answer(texts.NAME_TOO_SHORT)
+    name, why = clean_name(message.text)
+    if why:
+        await message.answer(texts.name_rejected(why))
         return
 
     classes = await active_classes(session)
@@ -391,6 +395,40 @@ async def off_teacher(
 # --- 🏫 Класи -------------------------------------------------------------
 
 
+@router.message(Command("free_number"))
+async def free_number_menu(message: Message, session: AsyncSession) -> None:
+    """Звільнити номер вимкненого вчителя для нової людини."""
+    rows = list(
+        await session.scalars(
+            select(Teacher)
+            .where(Teacher.is_active.is_(False), Teacher.phone.is_not(None))
+            .order_by(Teacher.full_name)
+        )
+    )
+    if not rows:
+        await message.answer(texts.NO_DISABLED_TEACHERS)
+        return
+    await message.answer(
+        texts.PICK_TEACHER_TO_FREE,
+        reply_markup=keyboards.picker(
+            [(t.id, f"{t.full_name} · {format_phone(t.phone)}") for t in rows], "free_number"
+        ),
+    )
+
+
+@router.callback_query(AdminAction.filter(F.action == "free_number"))
+async def free_number_apply(
+    query: CallbackQuery, callback_data: AdminAction, session: AsyncSession
+) -> None:
+    teacher = await free_number(session, int(callback_data.arg))
+    if teacher is None:
+        # Або запис зник, або його встигли повернути в дію, поки меню висіло.
+        await query.answer(texts.CANNOT_FREE_ACTIVE, show_alert=True)
+        return
+    await query.message.edit_text(texts.number_freed(teacher.full_name))
+    await query.answer()
+
+
 @router.message(F.text == texts.BTN_CLASSES)
 async def classes_list(message: Message, session: AsyncSession) -> None:
     classes = await active_classes(session)
@@ -405,7 +443,8 @@ async def classes_list(message: Message, session: AsyncSession) -> None:
                 )
             )
             warn = "" if teacher_names else "  ⚠️ <i>без класного керівника</i>"
-            lines.append(f"<b>{c.name}</b> — {', '.join(teacher_names) or '—'}{warn}")
+            joined = ", ".join(texts.esc(n) for n in teacher_names)
+            lines.append(f"<b>{texts.esc(c.name)}</b> — {joined or '—'}{warn}")
     else:
         lines.append("<i>Поки жодного.</i>")
     lines += ["", "Додати: /add_class", "Прибрати: /off_class"]

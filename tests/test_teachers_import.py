@@ -151,3 +151,264 @@ async def test_link_ignores_deactivated_teacher(session):
     t.is_active = False
     await session.flush()
     assert await link_by_phone(session, "0671234567", 555) is None
+
+
+# --- самореєстрація ------------------------------------------------------
+
+
+async def test_register_creates_teacher_for_unknown_phone(session):
+    """Номера немає у списку — запис створюється, а не відхиляється."""
+    from school_bot.domain.teachers import register_by_phone
+
+    teacher, is_new = await register_by_phone(session, "+380991112233", 777, "Вова 🌻")
+    assert is_new
+    assert teacher.tg_user_id == 777
+    assert teacher.phone == "380991112233"
+    assert teacher.is_active
+
+
+async def test_register_returns_existing_when_phone_is_known(session):
+    """Вчитель зі списку має отримати свій запис, а не дублікат."""
+    from sqlalchemy import func, select
+
+    from school_bot.domain.teachers import register_by_phone
+
+    await import_teachers(session, LIST)
+    teacher, is_new = await register_by_phone(session, "0671234567", 777, "Вова 🌻")
+    assert not is_new
+
+    assert teacher.full_name == "Коваленко Марія Іванівна"   # імʼя зі списку, не з Telegram
+    assert await session.scalar(select(func.count()).select_from(Teacher)) == 3
+
+
+async def test_register_is_idempotent(session):
+    from sqlalchemy import func, select
+
+    from school_bot.domain.teachers import register_by_phone
+
+    await register_by_phone(session, "0991112233", 777, "Вова")
+    await register_by_phone(session, "+380991112233", 777, "Вова")
+    assert await session.scalar(select(func.count()).select_from(Teacher)) == 1
+
+
+async def test_register_does_not_hijack_someone_elses_number(session):
+    """Чужий номер не має віддавати доступ до чужого запису навіть зараз,
+    коли перевірку за списком прибрано."""
+    from sqlalchemy import func, select
+
+    from school_bot.domain.teachers import register_by_phone
+
+    await import_teachers(session, LIST)
+    await register_by_phone(session, "0671234567", 555, "Перший")
+
+    intruder, _ = await register_by_phone(session, "0671234567", 999, "Другий")
+    assert intruder.tg_user_id == 999
+    assert intruder.full_name == "Другий"
+    assert intruder.phone is None, "чужу привʼязку до номера перезаписувати не можна"
+    # Запис Марії лишився за першим користувачем.
+    maria = await session.scalar(select(Teacher).where(Teacher.tg_user_id == 555))
+    assert maria.full_name == "Коваленко Марія Іванівна"
+    assert await session.scalar(select(func.count()).select_from(Teacher)) == 4
+
+
+async def test_recycled_number_does_not_inherit_role_or_classes(session):
+    """Новий власник номера не має успадкувати права попереднього.
+
+    Це той самий рядок БД, тож без скидання нова людина мовчки отримувала
+    роль адміністратора й чужі класи.
+    """
+    from school_bot.db.models import Role, SchoolClass
+    from school_bot.domain.classes import set_teacher_classes
+    from school_bot.domain.meals import classes_for_teacher
+    from school_bot.domain.teachers import import_teachers, register_by_phone
+
+    klass = SchoolClass(name="1-А", grade=1, letter="А", sort_order=1)
+    former = Teacher(
+        full_name="Стара Адмінка",
+        tg_user_id=800,
+        phone="380671234567",
+        role=Role.ADMIN,
+        is_active=False,
+    )
+    session.add_all([klass, former])
+    await session.flush()
+    await set_teacher_classes(session, former.id, {klass.id})
+
+    await import_teachers(session, "Новий Працівник, 0671234567")
+    newcomer, _ = await register_by_phone(session, "0671234567", 801, "Тест")
+
+    assert newcomer.role is Role.TEACHER, "успадкував роль адміністратора"
+    assert await classes_for_teacher(session, newcomer.id) == [], "успадкував чужі класи"
+
+
+async def test_reimport_keeps_role_and_classes_of_an_active_teacher(session):
+    """Скидання стосується лише вимкнених записів.
+
+    Інакше повторний імпорт списку знімав би права адміністратора
+    й класи з чинних вчителів.
+    """
+    from school_bot.db.models import Role
+    from school_bot.domain.meals import classes_for_teacher
+    from school_bot.domain.teachers import import_teachers
+
+    await import_teachers(session, "Коваленко Марія, 0671234567, 1-А")
+    teacher = await session.scalar(select(Teacher).where(Teacher.phone == "380671234567"))
+    teacher.role = Role.ADMIN
+    teacher.tg_user_id = 500
+    await session.flush()
+
+    await import_teachers(session, "Коваленко Марія Іванівна, 0671234567")
+
+    assert teacher.role is Role.ADMIN, "знято права з чинного адміністратора"
+    assert teacher.tg_user_id == 500
+    assert [c.name for c in await classes_for_teacher(session, teacher.id)] == ["1-А"]
+
+
+async def test_import_rejects_absurdly_long_name(session):
+    """Межа довжини має діяти й в імпорті, не лише в самореєстрації.
+
+    Бите CSV дає рядок із валідним номером і величезним «іменем» — і списки
+    вчителів перестають влазити в ліміт повідомлення Telegram.
+    """
+    from school_bot.domain.teachers import import_teachers, parse_teacher_list
+
+    (parsed,) = parse_teacher_list("Я" * 3000 + ", 0671234567")
+    assert not parsed.ok
+    assert parsed.error == "задовге імʼя"
+
+    result = await import_teachers(session, "Я" * 3000 + ", 0671234567")
+    assert result.created == []
+    assert len(result.failed) == 1
+
+
+async def test_all_input_paths_share_one_validation(session):
+    """Валідація ПІБ має бути спільною, а не своя в кожній точці вводу."""
+    from school_bot.domain.teachers import (
+        NAME_NO_LETTERS,
+        NAME_TOO_LONG,
+        NAME_TOO_SHORT,
+        clean_name,
+        parse_teacher_list,
+    )
+
+    assert clean_name("  Коваленко\nМарія  ") == ("Коваленко Марія", None)
+    assert clean_name("Ок")[1] == NAME_TOO_SHORT
+    assert clean_name("Я" * 3000)[1] == NAME_TOO_LONG
+    assert clean_name("12345")[1] == NAME_NO_LETTERS
+
+    # Той самий ввід через розбір списку відхиляється з тієї ж причини.
+    (parsed,) = parse_teacher_list("12345678, 0671234567")
+    assert parsed.error == NAME_NO_LETTERS
+
+
+async def test_double_contact_does_not_crash_registration(session):
+    """Подвійний тап по «Поділитися номером» не має валити сесію.
+
+    tg_user_id і phone унікальні; без savepoint другий flush падав
+    IntegrityError, і людина зависала посеред реєстрації.
+    """
+    from school_bot.domain.teachers import register_by_phone
+
+    first, is_new = await register_by_phone(session, "+380991112233", 777, "Вова")
+    assert is_new
+
+    # Імітуємо повторну доставку: запис уже є, але виклик той самий.
+    second, again = await register_by_phone(session, "+380991112233", 777, "Вова")
+    assert not again
+    assert second.id == first.id
+
+
+async def test_reactivating_the_same_person_keeps_role_and_classes(session):
+    """Реімпорт того самого списку повертає доступ, а не обнуляє людину.
+
+    Реімпорт — єдиний спосіб зняти /off_teacher, тож випадкове вимкнення
+    адміністратора не має коштувати йому ролі, класів і привʼязки.
+    """
+    from school_bot.db.models import Role
+    from school_bot.domain.meals import classes_for_teacher
+    from school_bot.domain.teachers import import_teachers
+
+    await import_teachers(session, "Шевчук Оксана Петрівна, 0509876543, 3-Б")
+    teacher = await session.scalar(select(Teacher).where(Teacher.phone == "380509876543"))
+    teacher.role = Role.ADMIN
+    teacher.tg_user_id = 600
+    teacher.is_active = False           # адміністратор помилково вимкнув
+    await session.flush()
+
+    await import_teachers(session, "Шевчук Оксана Петрівна, 0509876543, 3-Б")
+
+    assert teacher.is_active
+    assert teacher.role is Role.ADMIN, "втрачено роль при поверненні доступу"
+    assert teacher.tg_user_id == 600, "втрачено привʼязку до Telegram"
+    assert [c.name for c in await classes_for_teacher(session, teacher.id)] == ["3-Б"]
+
+
+async def test_reimport_with_corrected_name_keeps_everything(session):
+    """Виправлення написання ПІБ під час повернення доступу нічого не коштує.
+
+    Евристика «інше імʼя = нова людина» саме тут і ламалася: адміністратор
+    додає по батькові, а людина мовчки втрачає роль, класи й привʼязку.
+    """
+    from school_bot.db.models import Role
+    from school_bot.domain.meals import classes_for_teacher
+    from school_bot.domain.teachers import import_teachers
+
+    await import_teachers(session, "Коваленко Марія, 0671234567, 1-А")
+    teacher = await session.scalar(select(Teacher).where(Teacher.phone == "380671234567"))
+    teacher.role = Role.ADMIN
+    teacher.tg_user_id = 500
+    teacher.is_active = False
+    await session.flush()
+
+    # Повертають доступ і заразом дописують по батькові.
+    await import_teachers(session, "Коваленко Марія Іванівна, 0671234567, 1-А")
+
+    assert teacher.is_active
+    assert teacher.role is Role.ADMIN, "втрачено роль через виправлення ПІБ"
+    assert teacher.tg_user_id == 500, "втрачено привʼязку через виправлення ПІБ"
+    assert [c.name for c in await classes_for_teacher(session, teacher.id)] == ["1-А"]
+    assert teacher.full_name == "Коваленко Марія Іванівна"
+
+
+async def test_free_number_strips_identity_and_rights(session):
+    """Звільнення номера має знімати все, що успадкував би новий власник."""
+    from school_bot.db.models import Role
+    from school_bot.domain.meals import classes_for_teacher
+    from school_bot.domain.teachers import free_number, import_teachers
+
+    await import_teachers(session, "Стара Адмінка, 0671234567, 1-А")
+    teacher = await session.scalar(select(Teacher).where(Teacher.phone == "380671234567"))
+    teacher.role = Role.ADMIN
+    teacher.tg_user_id = 500
+    teacher.is_active = False          # звільняти можна лише вимкнений запис
+    await session.flush()
+
+    freed = await free_number(session, teacher.id)
+
+    assert freed.phone is None
+    assert freed.tg_user_id is None
+    assert freed.role is Role.TEACHER
+    assert await classes_for_teacher(session, freed.id) == []
+
+
+async def test_free_number_refuses_an_active_teacher(session):
+    """Застаріла кнопка не має обнуляти живого вчителя.
+
+    Список у меню /free_number — знімок; поки він висить, запис могли
+    повернути в дію реімпортом.
+    """
+    from school_bot.db.models import Role
+    from school_bot.domain.meals import classes_for_teacher
+    from school_bot.domain.teachers import free_number, import_teachers
+
+    await import_teachers(session, "Коваленко Марія, 0671234567, 1-А")
+    teacher = await session.scalar(select(Teacher).where(Teacher.phone == "380671234567"))
+    teacher.role = Role.ADMIN
+    teacher.tg_user_id = 500
+    await session.flush()
+
+    assert await free_number(session, teacher.id) is None, "обнулено активного вчителя"
+    assert teacher.tg_user_id == 500
+    assert teacher.phone == "380671234567"
+    assert teacher.role is Role.ADMIN
+    assert [c.name for c in await classes_for_teacher(session, teacher.id)] == ["1-А"]

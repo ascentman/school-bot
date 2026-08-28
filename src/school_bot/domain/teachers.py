@@ -7,13 +7,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from school_bot.db.models import SchoolClass, Teacher
+from school_bot.db.models import MAX_NAME_LEN, MIN_NAME_LEN, Role, SchoolClass, Teacher
 from school_bot.domain.classes import (
     CLASS_RE,
     create_classes,
@@ -22,7 +24,28 @@ from school_bot.domain.classes import (
 )
 from school_bot.domain.phones import looks_like_phone, normalize_phone
 
+log = logging.getLogger(__name__)
+
 SEPARATORS = re.compile(r"[,;\t|]+")
+
+# Причини, з яких ПІБ не приймається. Спільні для всіх точок вводу —
+# самореєстрації, /add_teacher і розбору списку: інакше кожна перевіряє
+# своє, і адміністратор може завести вчителя з ПІБ «12345».
+NAME_TOO_SHORT = "надто коротке імʼя"
+NAME_TOO_LONG = "задовге імʼя"
+NAME_NO_LETTERS = "імʼя без літер"
+
+
+def clean_name(raw: str | None) -> tuple[str, str | None]:
+    """Нормалізувати ПІБ і перевірити. Повертає (значення, причина відмови)."""
+    name = " ".join((raw or "").split())
+    if len(name) < MIN_NAME_LEN:
+        return name, NAME_TOO_SHORT
+    if len(name) > MAX_NAME_LEN:
+        return name, NAME_TOO_LONG
+    if not any(ch.isalpha() for ch in name):
+        return name, NAME_NO_LETTERS
+    return name, None
 
 
 @dataclass(slots=True)
@@ -65,8 +88,11 @@ def parse_line(line: str) -> ParsedTeacher | None:
 
     if not parsed.name:
         parsed.error = "не знайдено імені"
-    elif len(parsed.name) < 3:
-        parsed.error = "надто коротке імʼя"
+        return parsed
+
+    parsed.name, why = clean_name(parsed.name)
+    if why:
+        parsed.error = why
     elif parsed.phone is None:
         parsed.error = "не знайдено номера"
     return parsed
@@ -143,6 +169,11 @@ async def import_teachers(
             await session.flush()
             result.created.append(item)
         else:
+            # Імпорт нічого не обнуляє. Дві спроби вивести намір із даних —
+            # за is_active, потім за збігом ПІБ — обидві ламалися: адміністратор
+            # то повертає доступ, то заразом виправляє написання ПІБ, і код
+            # не може відрізнити це від «номер дістався новій людині».
+            # Тому звільнення номера — окрема явна дія (/free_number).
             teacher.full_name = item.name
             teacher.is_active = True
             result.updated.append(item)
@@ -153,6 +184,102 @@ async def import_teachers(
 
     await session.flush()
     return result
+
+
+async def register_by_phone(
+    session: AsyncSession, phone: str, tg_user_id: int, fallback_name: str
+) -> tuple[Teacher, bool]:
+    """Знайти вчителя за номером або створити новий запис.
+
+    Списку працівників бот не звіряє: людина, якої в ньому немає (новий
+    працівник, інший номер, помилка в імпорті), інакше впиралася б у відмову
+    й мусила шукати адміністратора. Класів у неї немає, доки їх не призначать,
+    тож без цього вона все одно нічого не бачить і запитів не отримує.
+
+    Повертає (запис, чи_створено_щойно) — від цього залежить, вітати людину
+    чи спершу спитати ПІБ.
+    """
+    existing = await link_by_phone(session, phone, tg_user_id)
+    if existing is not None:
+        return existing, False
+
+    normalized = normalize_phone(phone)
+    owner = (
+        await session.scalar(select(Teacher).where(Teacher.phone == normalized))
+        if normalized is not None
+        else None
+    )
+
+    if owner is not None and not owner.is_active:
+        # Доступ цій людині вимкнув адміністратор. Новий Telegram-акаунт на
+        # той самий номер не має цього обходити, інакше /off_teacher нічого
+        # не значить: досить видалити акаунт і зареєструвати заново.
+        log.warning("Спроба зайти під вимкненим номером %s", normalized)
+        return owner, False
+
+    if owner is not None:
+        # Номер закріплений за іншим активним акаунтом (оператор перевидав
+        # номер). Запис створюємо без номера: UNIQUE-обмеження інакше валить
+        # реєстрацію, а перезаписувати чужу привʼязку не можна.
+        log.warning("Номер %s уже закріплений за іншим акаунтом", normalized)
+        normalized = None
+
+    teacher = Teacher(tg_user_id=tg_user_id, full_name=fallback_name, phone=normalized)
+    try:
+        # Savepoint: подвійний тап по «Поділитися номером» (або повторна
+        # доставка апдейта Telegram) дає два одночасні вставки з тим самим
+        # tg_user_id. Без цього другий flush валить усю сесію, і людина
+        # зависає посеред реєстрації без жодної відповіді.
+        async with session.begin_nested():
+            session.add(teacher)
+        return teacher, True
+    except IntegrityError:
+        log.info("Повторна реєстрація tg=%s — беру наявний запис", tg_user_id)
+        # Конфлікт міг бути і по tg_user_id, і по номеру. Але віддати можна
+        # лише свій запис: якщо номер щойно зайняв інший Telegram-акаунт,
+        # повернення знайденого рядка привітало б людину під чужим імʼям
+        # і показало б чужі класи.
+        existing = await session.scalar(
+            select(Teacher).where(Teacher.tg_user_id == tg_user_id)
+        )
+        if existing is None and normalized is not None:
+            claimed = await session.scalar(
+                select(Teacher).where(Teacher.phone == normalized)
+            )
+            if claimed is not None and claimed.tg_user_id == tg_user_id:
+                existing = claimed
+        if existing is None:
+            raise
+        return existing, False
+
+
+async def free_number(session: AsyncSession, teacher_id: int) -> Teacher | None:
+    """Звільнити номер вимкненого вчителя для нового працівника.
+
+    Явна дія, а не здогад під час імпорту: тільки адміністратор знає, чи
+    номер дістався іншій людині, чи це та сама, якій повертають доступ.
+
+    Разом із номером знімаються привʼязка до Telegram, роль і класи —
+    інакше новий власник мовчки успадкує права попереднього.
+    """
+    teacher = await session.get(Teacher, teacher_id)
+    if teacher is None:
+        return None
+
+    # Список у меню — знімок на момент відкриття. Поки повідомлення висить,
+    # запис могли повернути в дію (реімпорт завжди ставить is_active=True),
+    # і застаріла кнопка обнулила б живого вчителя.
+    if teacher.is_active:
+        log.warning("Відмовлено у звільненні номера: %s уже активний", teacher.full_name)
+        return None
+
+    teacher.tg_user_id = None
+    teacher.phone = None
+    teacher.role = Role.TEACHER
+    await set_teacher_classes(session, teacher.id, set())
+    await session.flush()
+    log.info("Звільнено номер і привʼязку запису %s", teacher.full_name)
+    return teacher
 
 
 async def link_by_phone(session: AsyncSession, phone: str, tg_user_id: int) -> Teacher | None:

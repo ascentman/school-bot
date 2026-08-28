@@ -79,8 +79,13 @@ class AuthMiddleware(BaseMiddleware):
         ):
             return await handler(event, data)
 
+        # Вимкнений запис — не те саме, що невідомий: «облікового запису
+        # не знайдено» прямо суперечить дійсності й збиває людину з пантелику.
+        refusal = (
+            texts.ACCOUNT_DISABLED if teacher is not None else texts.NOT_REGISTERED
+        )
         if isinstance(event, CallbackQuery):
-            await event.answer(texts.NOT_REGISTERED, show_alert=True)
+            await event.answer(refusal, show_alert=True)
         elif isinstance(event, Message):
-            await event.answer(texts.NOT_REGISTERED)
+            await event.answer(refusal)
         return None

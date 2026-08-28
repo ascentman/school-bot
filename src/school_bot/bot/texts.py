@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 from datetime import date as Date
+from html import escape
 
 from school_bot.config import settings
+from school_bot.db.models import MAX_NAME_LEN
 from school_bot.domain.dates import format_date, plural_children
+
+
+def esc(value: str) -> str:
+    """Екранувати те, що прийшло від людини.
+
+    Бот працює в parse_mode=HTML, а ПІБ відтоді, як зʼявилася самореєстрація,
+    задає будь-хто. Символ «<» ламає розбір сутностей і валить відповідь
+    необробленим TelegramBadRequest; навмисний тег перетворює список вчителів
+    на клікабельне посилання в чаті адміністратора.
+    """
+    return escape(value or "", quote=False)
 
 # --- Доступ ---------------------------------------------------------------
 
@@ -21,11 +34,38 @@ ASK_CONTACT = (
     "<i>Номер потрібен лише для впізнання. Нікуди більше не передається.</i>"
 )
 BTN_SHARE_CONTACT = "📱 Поділитися номером"
-CONTACT_NOT_FOUND = (
-    "❔ Вашого номера немає в списку працівників школи.\n\n"
-    "Можливо, у списку записаний інший номер. Зверніться до адміністратора — "
-    "він додасть вас."
+ASK_FULL_NAME = (
+    "Дякую! Тепер напишіть, будь ласка, своє <b>ПІБ</b> — воно потрапить "
+    "у списки й звіти.\n\n"
+    "Наприклад: <code>Коваленко Марія Іванівна</code>"
 )
+NAME_ACCEPTED = "✅ Записав."
+ACCOUNT_DISABLED = (
+    "⛔ Ваш доступ вимкнено адміністратором.\n"
+    "Якщо це помилка — зверніться до нього."
+)
+def name_rejected(reason: str) -> str:
+    """Пояснення, чому ПІБ не прийнято. Причини — з domain.teachers."""
+    from school_bot.domain.teachers import NAME_NO_LETTERS, NAME_TOO_LONG
+
+    if reason == NAME_TOO_LONG:
+        return f"❗ Задовге ПІБ. Максимум — {MAX_NAME_LEN} символів."
+    if reason == NAME_NO_LETTERS:
+        return "❗ Схоже, це не ПІБ. Напишіть прізвище, імʼя та по батькові словами."
+    return "Надто коротко. Введіть ПІБ повністю:"
+def name_postponed(current: str) -> str:
+    """Показати, як людина записана зараз.
+
+    Раніше тут було два повідомлення й прапорець, який намагався вгадати,
+    первинна це реєстрація чи зміна. Будь-яка спроба вивести це з історії
+    (стану FSM, ніку відправника) виявлялася ламкою — тому просто називаємо
+    факт: він правдивий в обох випадках.
+    """
+    return (
+        f"Гаразд. Зараз ви записані як <b>{esc(current)}</b>.\n"
+        "Вказати або змінити ПІБ — команда /name."
+    )
+ASK_NAME_AGAIN = "Напишіть своє ПІБ одним повідомленням."
 CONTACT_NOT_YOURS = (
     "❗ Це контакт іншої людини. Натисніть кнопку «📱 Поділитися номером», "
     "щоб надіслати свій."
@@ -39,9 +79,9 @@ ACCESS_DENIED = "⛔ Ця дія доступна лише адміністра�
 
 
 def welcome(name: str, class_names: list[str], is_admin: bool) -> str:
-    lines = [f"✅ Вітаю, {name}!", ""]
+    lines = [f"✅ Вітаю, {esc(name)}!", ""]
     if class_names:
-        lines.append("Ваші класи: " + ", ".join(class_names))
+        lines.append("Ваші класи: " + ", ".join(esc(n) for n in class_names))
     else:
         # Без класів вчитель не отримає жодного запиту. Якщо про це не сказати,
         # він просто чекатиме й вважатиме, що бот не працює.
@@ -67,7 +107,7 @@ def welcome(name: str, class_names: list[str], is_admin: bool) -> str:
 
 def prompt(class_name: str, d: Date) -> str:
     return (
-        f"📋 <b>{class_name}</b> · {format_date(d, with_weekday=True)}\n\n"
+        f"📋 <b>{esc(class_name)}</b> · {format_date(d, with_weekday=True)}\n\n"
         "Скільки дітей сьогодні харчуються?"
     )
 
@@ -75,14 +115,14 @@ def prompt(class_name: str, d: Date) -> str:
 def prompt_answered(class_name: str, d: Date, count: int, at: str, *, edited: bool = False) -> str:
     head = "✏️ Виправлено" if edited else "✅ Записано"
     return (
-        f"✅ <b>{class_name}</b> · {format_date(d)} — <b>{plural_children(count)}</b>\n"
-        f"<i>{head} о {at}.</i>"
+        f"✅ <b>{esc(class_name)}</b> · {format_date(d)} — <b>{plural_children(count)}</b>\n"
+        f"<i>{head} о {esc(at)}.</i>"
     )
 
 
 def reminder(class_name: str, d: Date) -> str:
     return (
-        f"⏰ Нагадування: <b>{class_name}</b> · {format_date(d)}\n\n"
+        f"⏰ Нагадування: <b>{esc(class_name)}</b> · {format_date(d)}\n\n"
         "Дані про харчування ще не подані."
     )
 
@@ -96,6 +136,7 @@ TEACHER_HELP = (
     "• «✏️ Виправити» — змінити вже подану цифру за сьогодні.\n\n"
     "Якщо ви видалили повідомлення або хочете подати дані раніше — "
     "натисніть <b>📋 Мої класи</b> або команду /today.\n\n"
+    "Змінити своє ПІБ — команда /name.\n\n"
     "У вихідні та на канікулах я мовчу."
 )
 
@@ -140,7 +181,7 @@ def digest(d: Date, submitted: int, expected: int, total: int, missing: list[str
         f"Разом на харчуванні: <b>{plural_children(total)}</b>",
     ]
     if missing:
-        lines += ["", "❗ Не подали: " + ", ".join(missing)]
+        lines += ["", "❗ Не подали: " + ", ".join(esc(n) for n in missing)]
     else:
         lines += ["", "✅ Усі класи подали дані."]
     return "\n".join(lines)
@@ -151,10 +192,20 @@ NO_ACTIVE_TEACHERS = "Немає активних вчителів."
 NOTHING_TO_REPORT = "Ще немає жодного запису, тож звітувати нема про що."
 PICK_MONTH = "Оберіть місяць — надішлю XLSX і PDF:"
 PICK_TEACHER_TO_DISABLE = "Кого вимкнути? Дані вчителя зберігаються."
+NO_DISABLED_TEACHERS = "Немає вимкнених вчителів із закріпленим номером."
+CANNOT_FREE_ACTIVE = (
+    "Не звільнив: запис уже активний або його не знайдено.\n"
+    "Відкрийте /free_number ще раз — список міг застаріти."
+)
+PICK_TEACHER_TO_FREE = (
+    "Чий номер звільнити?\n\n"
+    "<i>Це для випадку, коли номер дістався новій людині. Запис втратить "
+    "номер, привʼязку до Telegram, роль і класи — щоб новий власник нічого "
+    "з цього не успадкував.</i>"
+)
 PICK_CLASS_TO_DISABLE = (
     "Який клас прибрати з опитування?\n<i>Історія записів зберігається.</i>"
 )
-NAME_TOO_SHORT = "Надто коротко. Введіть ПІБ повністю:"
 NOTHING_ADDED = "Нічого не додано."
 NO_DAYS_OFF_IN_RANGE = "У цьому діапазоні позначок не було."
 SYNC_IN_PROGRESS = "⏳ Синхронізую…"
@@ -162,7 +213,7 @@ NO_TEACHERS_HINT = "\n⚠️ Немає жодного вчителя — поч
 
 
 def sheet_url(sheet_id: str) -> str:
-    return f"https://docs.google.com/spreadsheets/d/{sheet_id}"
+    return f"https://docs.google.com/spreadsheets/d/{esc(sheet_id)}"
 
 
 def sync_done(synced: int, total: int) -> str:
@@ -174,12 +225,19 @@ def sync_done(synced: int, total: int) -> str:
     )
 
 
+def number_freed(name: str) -> str:
+    return (
+        f"✅ Номер запису <b>{esc(name)}</b> звільнено.\n"
+        "Тепер нова людина може зареєструватися з ним."
+    )
+
+
 def teacher_disabled(name: str) -> str:
-    return f"✅ {name} — доступ вимкнено."
+    return f"✅ {esc(name)} — доступ вимкнено."
 
 
 def class_disabled(name: str) -> str:
-    return f"✅ {name} прибрано з опитування."
+    return f"✅ {esc(name)} прибрано з опитування."
 
 
 def days_off_cleared(count: int) -> str:
@@ -189,15 +247,17 @@ def days_off_cleared(count: int) -> str:
 def classes_added(created: list[str], rejected: list[str]) -> str:
     parts = []
     if created:
-        parts.append("✅ Додано: " + ", ".join(created))
+        parts.append("✅ Додано: " + ", ".join(esc(c) for c in created))
     if rejected:
-        parts.append("⚠️ Пропущено: " + ", ".join(rejected))
+        # rejected — сирі шматки того, що набрав адміністратор: одрук на
+        # кшталт «1<3» інакше валить відповідь розбором сутностей.
+        parts.append("⚠️ Пропущено: " + ", ".join(esc(r) for r in rejected))
     return "\n".join(parts) or NOTHING_ADDED
 
 
 def report_caption(title: str, total: int, school_days: int, missing: int) -> str:
     caption = (
-        f"📅 <b>{title}</b>\n"
+        f"📅 <b>{esc(title)}</b>\n"
         f"Разом: <b>{total}</b> порцій за {school_days} навч. дн."
     )
     if missing:
@@ -260,10 +320,10 @@ def import_preview(created: int, updated: int, failed: list[str], classes: list[
     if updated:
         lines.append(f"🔄 Оновлених: <b>{updated}</b>")
     if classes:
-        lines.append(f"🏫 Створено класів: {', '.join(classes)}")
+        lines.append(f"🏫 Створено класів: {', '.join(esc(c) for c in classes)}")
     if failed:
         lines += ["", "⚠️ <b>Не вдалося розібрати:</b>"]
-        lines += [f"  • <code>{line}</code>" for line in failed[:10]]
+        lines += [f"  • <code>{esc(line)}</code>" for line in failed[:10]]
         if len(failed) > 10:
             lines.append(f"  …та ще {len(failed) - 10}")
     return "\n".join(lines)
@@ -273,7 +333,7 @@ def import_done(count: int, link: str) -> str:
     return (
         f"✅ Додано вчителів: <b>{count}</b>\n\n"
         "Тепер надішліть їм це посилання — одне на всіх:\n"
-        f"{link}\n\n"
+        f"{esc(link)}\n\n"
         "Вони натиснуть «Почати», поділяться номером — і я сам знайду кожного "
         "у списку разом з його класами.\n\n"
         "<i>Поки вчитель не відкриє бота, запити йому не надходитимуть — "
@@ -285,17 +345,18 @@ TEACHER_PICK_TO_EDIT = "Оберіть вчителя, щоб змінити й�
 
 
 def teacher_edit_classes(name: str) -> str:
-    return f"🏫 Класи вчителя <b>{name}</b>.\nПозначте потрібні та натисніть «Готово»."
+    return f"🏫 Класи вчителя <b>{esc(name)}</b>.\nПозначте потрібні та натисніть «Готово»."
 
 
 def teacher_classes_saved(name: str, class_names: list[str]) -> str:
-    return f"✅ <b>{name}</b> — класи: {', '.join(class_names) or '—'}"
+    joined = ", ".join(esc(n) for n in class_names)
+    return f"✅ <b>{esc(name)}</b> — класи: {joined or '—'}"
 
 
 def invite_created(name: str, link: str) -> str:
     return (
-        f"✅ Вчителя <b>{name}</b> додано.\n\n"
-        f"Надішліть це посилання для реєстрації:\n{link}\n\n"
+        f"✅ Вчителя <b>{esc(name)}</b> додано.\n\n"
+        f"Надішліть це посилання для реєстрації:\n{esc(link)}\n\n"
         "<i>Посилання одноразове.</i>"
     )
 
