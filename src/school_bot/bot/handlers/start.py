@@ -192,13 +192,7 @@ async def change_name_start(message: Message, state: FSMContext) -> None:
     Зареєстровано ДО хендлерів стану: інакше skip_full_name перехоплював
     /name разом з усім іншим, і команда спрацьовувала лише з другого разу.
     """
-    # «Зміна» — лише коли ПІБ уже нормальне. Якщо первинна реєстрація ще
-    # триває, у записі досі нік із Telegram, і відмова має казати «вкажете
-    # згодом», а не «лишив без змін».
-    data = await state.get_data()
-    registering = await state.get_state() == SelfRegister.full_name
     await state.set_state(SelfRegister.full_name)
-    await state.update_data(changing=data.get("changing", not registering))
     await message.answer(texts.ASK_NAME_AGAIN)
 
 
@@ -232,17 +226,17 @@ async def receive_full_name(
 
 
 @router.message(SelfRegister.full_name)
-async def skip_full_name(message: Message, state: FSMContext) -> None:
+async def skip_full_name(
+    message: Message, state: FSMContext, teacher: Teacher | None
+) -> None:
     """Будь-що, крім тексту з ПІБ, виводить зі стану очікування.
 
     Інакше хендлер стану ковтав команди: /help зберігався як ПІБ, сама
     команда не спрацьовувала, а вийти зі стану було нічим.
     """
-    changing = (await state.get_data()).get("changing", False)
     await state.clear()
-    # Через /name ПІБ уже було нормальне й лишається таким. Казати «записав
-    # вас як у Telegram» тут — неправда, і вчитель вирішить, що втратив ПІБ.
-    await message.answer(texts.NAME_UNCHANGED if changing else texts.NAME_POSTPONED)
+    current = teacher.full_name if teacher is not None else message.from_user.full_name
+    await message.answer(texts.name_postponed(current))
 
 
 @router.message(F.text == texts.BTN_MY_CLASSES)

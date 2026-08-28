@@ -261,7 +261,7 @@ async def test_command_in_name_state_leaves_the_state(send, people, maker):
     """Після команди стан скидається, і бот знову слухає звичайні команди."""
     await send(tg_id=908, contact=_own_contact(908, "+380991110908"))
     postponed = await send("/help", tg_id=908)
-    assert any("можна вказати згодом" in r for r in postponed)
+    assert any("/name" in r for r in postponed)
 
     # Тепер /help має спрацювати нормально.
     assert any("Як це працює" in r for r in await send("/help", tg_id=908))
@@ -613,8 +613,7 @@ async def test_name_during_initial_registration_is_not_a_change(send, people):
     await send("/name", tg_id=990)
     replies = await send("/help", tg_id=990)
 
-    assert not any("без змін" in r for r in replies), replies
-    assert any("згодом" in r for r in replies), replies
+    assert any("Вова 🌻" in r for r in replies), replies
 
 
 async def test_disabled_user_is_told_so_not_that_account_is_unknown(send, maker):
@@ -637,3 +636,22 @@ async def test_add_teacher_rejects_absurdly_long_name(send, people):
     await send("/add_teacher", tg_id=ADMIN_ID)
     replies = await send("Я" * 3000, tg_id=ADMIN_ID)
     assert any("довг" in r.lower() for r in replies), replies
+
+
+async def test_repeated_postpone_never_claims_a_name_was_kept(send, people, maker):
+    """Цикл «відклав → /name → відклав» не має стверджувати, що ПІБ збережено.
+
+    Прапорець, виведений з FSM-стану, цього не переживав: стан очищується
+    при відкладанні, тож другий /name виглядав як зміна вже наявного ПІБ.
+    """
+    from school_bot.db.models import Teacher
+
+    await send(tg_id=996, contact=_own_contact(996, "+380991110996"), name="Вова 🌻")
+    await send("/help", tg_id=996)
+    await send("/name", tg_id=996)
+    replies = await send("/help", tg_id=996)
+
+    async with maker() as s:
+        saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 996))
+    assert saved.full_name == "Вова 🌻", "ПІБ так і не вводили"
+    assert any("Вова 🌻" in r for r in replies), "повідомлення має називати фактичне ПІБ"
