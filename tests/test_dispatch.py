@@ -702,21 +702,22 @@ async def test_teacher_adds_a_second_class(send, tap, maker):
         assert [c.name for c in await classes_for_teacher(s, teacher.id)] == ["1-А", "3-Б"]
 
 
-async def test_already_picked_class_is_not_offered_again(send, tap, maker):
+async def test_already_picked_class_is_not_offered_again(send, tap, api_bot, maker):
+    """Перевіряти треба саму сітку, а не текст запрошення над нею."""
     from school_bot.domain.classes import create_classes
 
     async with maker() as s:
-        await create_classes(s, "1-А, 3-Б")
+        await create_classes(s, "1-А, 3-Б, 5-В")
         await s.commit()
 
     await send(tg_id=1003, contact=_own_contact(1003, "+380991111003"))
     await send("Мельник Ігор Богданович", tg_id=1003)
     await tap("1-А", tg_id=1003)
-    replies = await tap("Ще один клас", tg_id=1003)
+    await tap("Ще один клас", tg_id=1003)
 
-    joined = "\n".join(replies)
-    assert "Оберіть ще один клас" in joined
-    # 1-А вже обрано — у сітці лишається тільки 3-Б.
+    offered = api_bot.buttons
+    assert "1-А" not in offered, f"вже обраний клас пропонується знову: {offered}"
+    assert "3-Б" in offered and "5-В" in offered, offered
 
 
 async def test_picking_stops_when_no_classes_left(send, tap, people, maker):
@@ -741,3 +742,16 @@ async def test_changing_name_later_does_not_ask_for_classes_again(send, tap, peo
 
     assert not any("Оберіть свій клас" in r for r in replies), replies
     assert any("Вітаю, Гнатюк Леся Андріївна" in r for r in replies), replies
+
+
+async def test_text_during_class_picking_does_not_hang(send, tap, people, maker):
+    """Текст замість кнопки має вивести зі стану, а не лишити людину в ньому."""
+    await send(tg_id=1006, contact=_own_contact(1006, "+380991111006"))
+    await send("Ткаченко Наталія", tg_id=1006)
+
+    replies = await send("а можна без класу?", tg_id=1006)
+    assert any("вибір класів припинив" in r.lower() for r in replies), replies
+    assert any("Вітаю" in r for r in replies), replies
+
+    # Стан очищено: наступне повідомлення обробляється як звичайне.
+    assert any("Як це працює" in r for r in await send("/help", tg_id=1006))

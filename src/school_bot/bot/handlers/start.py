@@ -188,6 +188,20 @@ async def receive_contact(
 
 
 # [^/\s], а не [^/]: інакше «\s*» бектрекає й " /help" проходить як ПІБ.
+@router.message(SelfRegister.classes)
+async def skip_class_picking(
+    message: Message, session: AsyncSession, teacher: Teacher, state: FSMContext
+) -> None:
+    """Текст замість натискання кнопки виводить зі стану вибору класів.
+
+    Симетрично до skip_full_name: інакше повідомлення провалюється у
+    fallback, стан лишається, і вчитель зависає в ньому до /start.
+    """
+    await state.clear()
+    await message.answer(texts.CLASS_PICKING_STOPPED)
+    await _greet(message, session, teacher)
+
+
 @router.message(Command("name"))
 async def change_name_start(message: Message, state: FSMContext) -> None:
     """Змінити власне ПІБ.

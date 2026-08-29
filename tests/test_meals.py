@@ -203,3 +203,28 @@ async def test_set_teacher_classes_replaces(session, classes, teacher):
 
     await set_teacher_classes(session, teacher.id, set())
     assert await classes_for_teacher(session, teacher.id) == []
+
+
+async def test_unrecognised_classes_from_config_are_reported(session, caplog):
+    """Одрук у SCHOOL_CLASSES не має зникати мовчки."""
+    import logging
+
+    from school_bot.domain.classes import ensure_classes
+
+    with caplog.at_level(logging.WARNING):
+        created = await ensure_classes(session, ["1-А", "13-Я", "хтозна"])
+
+    assert created == ["1-А"]
+    assert "13-Я" in caplog.text and "хтозна" in caplog.text
+
+
+async def test_existing_classes_are_not_reported_as_errors(session, caplog):
+    """Повторний старт із тим самим списком не має сипати попередженнями."""
+    import logging
+
+    from school_bot.domain.classes import ensure_classes
+
+    await ensure_classes(session, ["1-А", "2-Б"])
+    with caplog.at_level(logging.WARNING):
+        assert await ensure_classes(session, ["1-А", "2-Б"]) == []
+    assert "не розпізнано" not in caplog.text

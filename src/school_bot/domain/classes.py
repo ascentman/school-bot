@@ -89,9 +89,15 @@ async def ensure_classes(session: AsyncSession, names: list[str]) -> list[str]:
     """
     if not names:
         return []
-    created, _ = await create_classes(session, ", ".join(names))
+    created, rejected = await create_classes(session, ", ".join(names))
     if created:
         log.info("Створено класи з конфігу: %s", ", ".join(created))
+
+    # Нерозпізнане не мовчимо: одрук у SCHOOL_CLASSES інакше просто зникає,
+    # і адміністратор дізнається про це, лише коли вчитель не знайде свій клас.
+    unknown = [r for r in rejected if "вже є" not in r]
+    if unknown:
+        log.warning("SCHOOL_CLASSES: не розпізнано — %s", ", ".join(unknown))
     return created
 
 

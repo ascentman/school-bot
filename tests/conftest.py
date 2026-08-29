@@ -135,6 +135,16 @@ class RecordingBot:
     def texts(self) -> list[str]:
         return [getattr(c, "text", "") or "" for c in self.calls]
 
+    @property
+    def buttons(self) -> list[str]:
+        """Підписи inline-кнопок останньої відповіді."""
+        return [
+            b.text
+            for call in self.calls
+            for row in getattr(getattr(call, "reply_markup", None), "inline_keyboard", [])
+            for b in row
+        ]
+
     def said(self, fragment: str) -> bool:
         return any(fragment.lower() in t.lower() for t in self.texts)
 
