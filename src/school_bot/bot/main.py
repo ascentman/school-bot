@@ -19,6 +19,7 @@ from school_bot.bot.handlers import admin, daily, fallback, start
 from school_bot.bot.middlewares import AuthMiddleware, DbSessionMiddleware
 from school_bot.config import settings
 from school_bot.db.base import SessionMaker, ensure_schema
+from school_bot.domain.classes import ensure_classes
 from school_bot.scheduler import jobs
 
 log = logging.getLogger(__name__)
@@ -88,6 +89,9 @@ async def run() -> None:
         )
 
     await ensure_schema()
+    async with SessionMaker() as session:
+        await ensure_classes(session, settings.school_classes)
+        await session.commit()
 
     bot = Bot(
         token=settings.bot_token,

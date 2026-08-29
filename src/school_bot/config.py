@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     bot_token: str = Field(default="", description="Токен від @BotFather")
     school_name: str = "Загальноосвітня школа"
 
+    # Усі класи школи. Створюються при старті, якщо їх ще немає, і саме з них
+    # вчитель обирає свої під час реєстрації. Наявні класи не видаляються:
+    # за ними лишається історія записів.
+    school_classes: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
     # Telegram ID тих, хто отримує права адміна при першому /start.
     # NoDecode: без нього pydantic-settings намагається розібрати значення з .env
     # як JSON ще до валідаторів, і звичайний список через кому падає.
@@ -66,6 +71,14 @@ class Settings(BaseSettings):
         """Дозволяє записати BOOTSTRAP_ADMINS=111,222 у .env."""
         if isinstance(v, str):
             return [int(part) for part in v.replace(" ", "").split(",") if part]
+        return v
+
+    @field_validator("school_classes", mode="before")
+    @classmethod
+    def _split_classes(cls, v: object) -> object:
+        """Дозволяє записати SCHOOL_CLASSES=1-А,1-Б,2-А у .env."""
+        if isinstance(v, str):
+            return [part.strip() for part in v.split(",") if part.strip()]
         return v
 
     @field_validator("remind_times", mode="before")

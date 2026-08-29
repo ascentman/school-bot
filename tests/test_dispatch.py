@@ -145,23 +145,23 @@ async def test_unknown_number_is_registered_not_refused(send, people, maker):
 
 
 async def test_name_is_saved_after_self_registration(send, people, maker):
-    from sqlalchemy import select
-
-    from school_bot.db.models import Teacher
-
     await send(tg_id=901, contact=_own_contact(901, "+380991110001"), name="Вова 🌻")
     replies = await send("Коваленко Марія Іванівна", tg_id=901)
 
-    assert any("Вітаю, Коваленко Марія Іванівна" in r for r in replies), replies
+    assert any("Записав" in r for r in replies), replies
+    assert any("Оберіть свій клас" in r for r in replies), replies
     async with maker() as s:
         saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 901))
     assert saved.full_name == "Коваленко Марія Іванівна"
 
 
-async def test_self_registered_teacher_is_warned_about_no_classes(send, people):
+async def test_no_configured_classes_falls_back_to_the_warning(send, maker):
+    """Якщо класів у школі ще немає, вибирати нічого — лишається попередження."""
     await send(tg_id=902, contact=_own_contact(902, "+380991110002"))
     replies = await send("Мельник Ігор Богданович", tg_id=902)
-    assert any("не закріплено жодного класу" in r for r in replies)
+
+    assert any("не заведені" in r for r in replies), replies
+    assert any("не закріплено жодного класу" in r for r in replies), replies
 
 
 async def test_too_short_name_is_rejected(send, people, maker):
@@ -657,3 +657,87 @@ async def test_repeated_postpone_never_claims_a_name_was_kept(send, people, make
         saved = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 996))
     assert saved.full_name == "Вова 🌻", "ПІБ так і не вводили"
     assert any("Вова 🌻" in r for r in replies), "повідомлення має називати фактичне ПІБ"
+
+
+# --- вибір класів після ПІБ ----------------------------------------------
+
+
+async def test_teacher_picks_one_class_then_finishes(send, tap, people, maker):
+    from school_bot.domain.meals import classes_for_teacher
+
+    await send(tg_id=1001, contact=_own_contact(1001, "+380991111001"))
+    await send("Коваленко Марія Іванівна", tg_id=1001)
+
+    picked = await tap("1-А", tg_id=1001)
+    assert any("Додано" in r for r in picked), picked
+
+    done = await tap("Це все", tg_id=1001)
+    assert any("Вітаю" in r for r in done), done
+
+    async with maker() as s:
+        teacher = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 1001))
+        assert [c.name for c in await classes_for_teacher(s, teacher.id)] == ["1-А"]
+
+
+async def test_teacher_adds_a_second_class(send, tap, maker):
+    from school_bot.domain.classes import create_classes
+    from school_bot.domain.meals import classes_for_teacher
+
+    async with maker() as s:
+        await create_classes(s, "1-А, 3-Б, 5-В")
+        await s.commit()
+
+    await send(tg_id=1002, contact=_own_contact(1002, "+380991111002"))
+    await send("Шевчук Оксана Петрівна", tg_id=1002)
+
+    await tap("1-А", tg_id=1002)
+    again = await tap("Ще один клас", tg_id=1002)
+    assert any("Оберіть ще один клас" in r for r in again), again
+
+    await tap("3-Б", tg_id=1002)
+    await tap("Це все", tg_id=1002)
+
+    async with maker() as s:
+        teacher = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 1002))
+        assert [c.name for c in await classes_for_teacher(s, teacher.id)] == ["1-А", "3-Б"]
+
+
+async def test_already_picked_class_is_not_offered_again(send, tap, maker):
+    from school_bot.domain.classes import create_classes
+
+    async with maker() as s:
+        await create_classes(s, "1-А, 3-Б")
+        await s.commit()
+
+    await send(tg_id=1003, contact=_own_contact(1003, "+380991111003"))
+    await send("Мельник Ігор Богданович", tg_id=1003)
+    await tap("1-А", tg_id=1003)
+    replies = await tap("Ще один клас", tg_id=1003)
+
+    joined = "\n".join(replies)
+    assert "Оберіть ще один клас" in joined
+    # 1-А вже обрано — у сітці лишається тільки 3-Б.
+
+
+async def test_picking_stops_when_no_classes_left(send, tap, people, maker):
+    """Єдиний клас обрано — далі пропонувати нічого."""
+    await send(tg_id=1004, contact=_own_contact(1004, "+380991111004"))
+    await send("Бондаренко Ольга", tg_id=1004)
+    await tap("1-А", tg_id=1004)
+
+    replies = await tap("Ще один клас", tg_id=1004)
+    assert any("всі класи" in r.lower() for r in replies), replies
+    assert any("Вітаю" in r for r in replies), replies
+
+
+async def test_changing_name_later_does_not_ask_for_classes_again(send, tap, people, maker):
+    await send(tg_id=1005, contact=_own_contact(1005, "+380991111005"))
+    await send("Гнатюк Леся", tg_id=1005)
+    await tap("1-А", tg_id=1005)
+    await tap("Це все", tg_id=1005)
+
+    await send("/name", tg_id=1005)
+    replies = await send("Гнатюк Леся Андріївна", tg_id=1005)
+
+    assert not any("Оберіть свій клас" in r for r in replies), replies
+    assert any("Вітаю, Гнатюк Леся Андріївна" in r for r in replies), replies

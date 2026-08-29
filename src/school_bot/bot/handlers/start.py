@@ -8,15 +8,17 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, ReplyKeyboardRemove
+from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from school_bot.bot import keyboards, texts
+from school_bot.bot.callbacks import PickClass, PickDone
 from school_bot.bot.commands import set_personal_commands
 from school_bot.clock import today
-from school_bot.db.models import Teacher
-from school_bot.domain.meals import classes_for_teacher, get_entry
+from school_bot.db.models import SchoolClass, Teacher
+from school_bot.domain.classes import set_teacher_classes
+from school_bot.domain.meals import active_classes, classes_for_teacher, get_entry
 from school_bot.domain.teachers import clean_name, register_by_phone
 
 log = logging.getLogger(__name__)
@@ -25,6 +27,7 @@ router = Router(name="start")
 
 class SelfRegister(StatesGroup):
     full_name = State()
+    classes = State()
 
 INVITE_PREFIX = "inv_"
 
@@ -207,11 +210,83 @@ async def receive_full_name(
 
     teacher.full_name = name
     await session.flush()
-    await state.clear()
     log.info("Вчитель %s назвав ПІБ", name)
-
     await message.answer(texts.NAME_ACCEPTED)
-    await _greet(message, session, teacher)
+
+    # Вчитель, який уже має класи, змінював ПІБ через /name — питати
+    # класи вдруге не треба.
+    if await classes_for_teacher(session, teacher.id):
+        await state.clear()
+        await _greet(message, session, teacher)
+        return
+
+    await _offer_classes(message, session, teacher, state, texts.ASK_FIRST_CLASS)
+
+
+async def _offer_classes(
+    message: Message,
+    session: AsyncSession,
+    teacher: Teacher,
+    state: FSMContext,
+    prompt: str,
+) -> None:
+    """Показати класи, яких у вчителя ще немає."""
+    mine = {c.id for c in await classes_for_teacher(session, teacher.id)}
+    available = [(c.id, c.name) for c in await active_classes(session) if c.id not in mine]
+
+    if not available:
+        await state.clear()
+        await message.answer(
+            texts.ALL_CLASSES_PICKED if mine else texts.NO_CLASSES_CONFIGURED
+        )
+        await _greet(message, session, teacher)
+        return
+
+    await state.set_state(SelfRegister.classes)
+    await message.answer(prompt, reply_markup=keyboards.pick_class(available))
+
+
+@router.callback_query(SelfRegister.classes, PickClass.filter())
+async def picked_class(
+    query: CallbackQuery,
+    callback_data: PickClass,
+    session: AsyncSession,
+    teacher: Teacher,
+    state: FSMContext,
+) -> None:
+    school_class = await session.get(SchoolClass, callback_data.class_id)
+    if school_class is None:
+        await query.answer(texts.NOTHING_TO_EDIT, show_alert=True)
+        return
+
+    mine = {c.id for c in await classes_for_teacher(session, teacher.id)}
+    await set_teacher_classes(session, teacher.id, mine | {school_class.id})
+    chosen = [c.name for c in await classes_for_teacher(session, teacher.id)]
+    log.info("Вчитель %s обрав клас %s", teacher.full_name, school_class.name)
+
+    await query.message.edit_text(
+        texts.class_picked(school_class.name, chosen), reply_markup=keyboards.pick_more()
+    )
+    await query.answer()
+
+
+@router.callback_query(SelfRegister.classes, PickDone.filter())
+async def picked_done(
+    query: CallbackQuery,
+    callback_data: PickDone,
+    session: AsyncSession,
+    teacher: Teacher,
+    state: FSMContext,
+) -> None:
+    await query.message.edit_reply_markup(reply_markup=None)
+    await query.answer()
+
+    if callback_data.more:
+        await _offer_classes(query.message, session, teacher, state, texts.ASK_NEXT_CLASS)
+        return
+
+    await state.clear()
+    await _greet(query.message, session, teacher)
 
 
 @router.message(SelfRegister.full_name)

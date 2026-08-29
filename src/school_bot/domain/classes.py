@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date as Date
 
@@ -9,6 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from school_bot.db.models import ClassAssignment, SchoolClass
+
+log = logging.getLogger(__name__)
 
 # "3-Б", "3 Б", "3б", "10-А"
 CLASS_RE = re.compile(r"^\s*(\d{1,2})\s*[-–—\s]?\s*([А-ЯЇІЄҐа-яїієґA-Za-z]?)\s*$")
@@ -75,6 +78,21 @@ async def create_classes(session: AsyncSession, raw: str) -> tuple[list[str], li
 
     await session.flush()
     return created, rejected
+
+
+async def ensure_classes(session: AsyncSession, names: list[str]) -> list[str]:
+    """Створити класи зі списку, яких ще немає.
+
+    Викликається при старті з SCHOOL_CLASSES. Наявних не чіпає й нічого не
+    видаляє: за класом, прибраним зі списку, лишається історія записів,
+    а сховати його з опитування можна через /off_class.
+    """
+    if not names:
+        return []
+    created, _ = await create_classes(session, ", ".join(names))
+    if created:
+        log.info("Створено класи з конфігу: %s", ", ".join(created))
+    return created
 
 
 async def set_teacher_classes(
