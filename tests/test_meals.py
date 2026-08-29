@@ -203,3 +203,87 @@ async def test_set_teacher_classes_replaces(session, classes, teacher):
 
     await set_teacher_classes(session, teacher.id, set())
     assert await classes_for_teacher(session, teacher.id) == []
+
+
+async def test_unrecognised_classes_from_config_are_reported(session, caplog):
+    """Одрук у SCHOOL_CLASSES не має зникати мовчки."""
+    import logging
+
+    from school_bot.domain.classes import ensure_classes
+
+    with caplog.at_level(logging.WARNING):
+        created = await ensure_classes(session, ["1-А", "13-Я", "хтозна"])
+
+    assert created == ["1-А"]
+    assert "13-Я" in caplog.text and "хтозна" in caplog.text
+
+
+async def test_existing_classes_are_not_reported_as_errors(session, caplog):
+    """Повторний старт із тим самим списком не має сипати попередженнями."""
+    import logging
+
+    from school_bot.domain.classes import ensure_classes
+
+    await ensure_classes(session, ["1-А", "2-Б"])
+    with caplog.at_level(logging.WARNING):
+        assert await ensure_classes(session, ["1-А", "2-Б"]) == []
+    assert "не розпізнано" not in caplog.text
+
+
+async def test_add_teacher_class_does_not_wipe_the_others(session, classes, teacher):
+    """Додавання одного класу не має чіпати вже наявні.
+
+    set_teacher_classes перезаписує весь набір, тож два майже одночасні
+    тапи по різних класах затирали б один одного.
+    """
+    from school_bot.domain.classes import add_teacher_class
+
+    await add_teacher_class(session, teacher.id, classes[0].id)
+    await add_teacher_class(session, teacher.id, classes[1].id)
+
+    assert [c.name for c in await classes_for_teacher(session, teacher.id)] == ["1-А", "3-Б"]
+
+
+async def test_add_teacher_class_is_idempotent(session, classes, teacher):
+    from sqlalchemy import func
+
+    from school_bot.db.models import ClassAssignment
+    from school_bot.domain.classes import add_teacher_class
+
+    for _ in range(3):
+        await add_teacher_class(session, teacher.id, classes[0].id)
+
+    total = await session.scalar(select(func.count()).select_from(ClassAssignment))
+    assert total == 1
+
+
+async def test_stale_read_would_lose_a_concurrent_pick(session, classes, teacher):
+    """Показує, чому додавання не можна робити через перезапис набору.
+
+    Хендлер читає набір класів, а записує пізніше. Якщо між читанням і
+    записом інший тап устиг додати свій клас, перезапис його видаляє —
+    бо в застарілому наборі його немає.
+    """
+    from school_bot.domain.classes import add_teacher_class, set_teacher_classes
+
+    stale = {c.id for c in await classes_for_teacher(session, teacher.id)}   # порожньо
+
+    # Сусідній тап устигає додати свій клас…
+    await add_teacher_class(session, teacher.id, classes[0].id)
+
+    # …а наш дописує свій, спираючись на застарілий набір.
+    await set_teacher_classes(session, teacher.id, stale | {classes[1].id})
+    assert [c.name for c in await classes_for_teacher(session, teacher.id)] == ["3-Б"], (
+        "перезапис мав би зʼїсти клас сусіда — саме тому хендлер його не використовує"
+    )
+
+
+async def test_add_survives_the_same_sequence(session, classes, teacher):
+    """Та сама послідовність через add_teacher_class зберігає обидва класи."""
+    from school_bot.domain.classes import add_teacher_class
+
+    {c.id for c in await classes_for_teacher(session, teacher.id)}       # застаріле читання
+    await add_teacher_class(session, teacher.id, classes[0].id)          # сусідній тап
+    await add_teacher_class(session, teacher.id, classes[1].id)          # наш тап
+
+    assert [c.name for c in await classes_for_teacher(session, teacher.id)] == ["1-А", "3-Б"]

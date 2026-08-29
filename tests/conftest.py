@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 import pytest_asyncio
-from aiogram.types import Chat, Contact, Message, Update, User
+from aiogram.types import CallbackQuery, Chat, Contact, Message, Update, User
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from school_bot.db.models import Base, ClassAssignment, Role, SchoolClass, Teacher
@@ -135,13 +135,30 @@ class RecordingBot:
     def texts(self) -> list[str]:
         return [getattr(c, "text", "") or "" for c in self.calls]
 
+    @property
+    def buttons(self) -> list[str]:
+        """Підписи inline-кнопок останньої відповіді."""
+        return [
+            b.text
+            for call in self.calls
+            for row in getattr(getattr(call, "reply_markup", None), "inline_keyboard", [])
+            for b in row
+        ]
+
     def said(self, fragment: str) -> bool:
         return any(fragment.lower() in t.lower() for t in self.texts)
 
 
 def _canned_response(method):
-    from aiogram.methods import SendMessage
+    from aiogram.methods import EditMessageText, SendMessage
 
+    if isinstance(method, EditMessageText):
+        return Message(
+            message_id=5,
+            date=datetime.now(UTC),
+            chat=Chat(id=1, type="private"),
+            text=method.text,
+        )
     if isinstance(method, SendMessage):
         return Message(
             message_id=999,
@@ -198,3 +215,39 @@ def send(dispatcher, api_bot, maker):
         return api_bot.texts
 
     return _send
+
+
+@pytest.fixture
+def tap(dispatcher, api_bot, maker):
+    """Натиснути inline-кнопку з останньої відповіді бота."""
+    _ACTIVE_MAKER["maker"] = maker
+
+    async def _tap(label: str, *, tg_id: int) -> list[str]:
+        buttons = [
+            b
+            for call in api_bot.calls
+            for row in getattr(getattr(call, "reply_markup", None), "inline_keyboard", [])
+            for b in row
+        ]
+        match = next((b for b in buttons if label in b.text), None)
+        assert match is not None, f"кнопки «{label}» немає серед {[b.text for b in buttons]}"
+
+        api_bot.calls.clear()
+        message = Message(
+            message_id=5,
+            date=datetime.now(UTC),
+            chat=Chat(id=tg_id, type="private"),
+            from_user=User(id=api_bot.id, is_bot=True, first_name="bot"),
+            text="…",
+        ).as_(api_bot)
+        query = CallbackQuery(
+            id="1",
+            from_user=User(id=tg_id, is_bot=False, first_name="Тест"),
+            chat_instance="1",
+            message=message,
+            data=match.callback_data,
+        ).as_(api_bot)
+        await dispatcher.feed_update(api_bot, Update(update_id=2, callback_query=query))
+        return api_bot.texts
+
+    return _tap

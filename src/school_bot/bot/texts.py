@@ -40,6 +40,27 @@ ASK_FULL_NAME = (
     "Наприклад: <code>Коваленко Марія Іванівна</code>"
 )
 NAME_ACCEPTED = "✅ Записав."
+ASK_FIRST_CLASS = "Оберіть свій клас:"
+ASK_NEXT_CLASS = "Оберіть ще один клас:"
+NO_CLASSES_CONFIGURED = (
+    "Класи ще не заведені — адміністратор призначить вам їх пізніше."
+)
+
+
+def class_picked(name: str, chosen: list[str]) -> str:
+    return (
+        f"✅ Додано <b>{esc(name)}</b>.\n"
+        f"Ваші класи: {', '.join(esc(c) for c in chosen)}\n\n"
+        "Ще один клас?"
+    )
+
+
+ALL_CLASSES_PICKED = "Це всі класи, що є. Завершую."
+CLASS_NO_LONGER_AVAILABLE = "Цього класу вже немає в списку. Оберіть інший."
+CLASS_PICKING_STOPPED = (
+    "Гаразд, вибір класів припинив. Якщо потрібен ще клас — "
+    "зверніться до адміністратора."
+)
 ACCOUNT_DISABLED = (
     "⛔ Ваш доступ вимкнено адміністратором.\n"
     "Якщо це помилка — зверніться до нього."

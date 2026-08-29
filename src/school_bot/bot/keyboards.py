@@ -20,6 +20,8 @@ from school_bot.bot.callbacks import (
     MealManual,
     MealSet,
     MonthPick,
+    PickClass,
+    PickDone,
 )
 from school_bot.domain.dates import month_name
 
@@ -122,6 +124,24 @@ def my_classes(d: Date, rows: list[tuple[int, str, int | None]]) -> InlineKeyboa
             callback_data=MealEdit(class_id=class_id, d=d.toordinal()).pack(),
         )
     kb.adjust(1)
+    return kb.as_markup()
+
+
+def pick_class(classes: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    """Сітка класів школи для вибору при реєстрації."""
+    kb = InlineKeyboardBuilder()
+    for class_id, name in classes:
+        kb.button(text=name, callback_data=PickClass(class_id=class_id).pack())
+    kb.adjust(4)
+    return kb.as_markup()
+
+
+def pick_more() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        InlineKeyboardButton(text="➕ Ще один клас", callback_data=PickDone(more=True).pack()),
+        InlineKeyboardButton(text="✅ Це все", callback_data=PickDone(more=False).pack()),
+    )
     return kb.as_markup()
 
 

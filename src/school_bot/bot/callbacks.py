@@ -56,3 +56,15 @@ class MonthPick(CallbackData, prefix="mo"):
 
 class ClassToggle(CallbackData, prefix="ct"):
     class_id: int
+
+
+class PickClass(CallbackData, prefix="pc"):
+    """Вибір свого класу під час реєстрації."""
+
+    class_id: int
+
+
+class PickDone(CallbackData, prefix="pd"):
+    """«Готово» або «Додати ще» у виборі класів."""
+
+    more: bool

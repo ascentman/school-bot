@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date as Date
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from school_bot.db.models import ClassAssignment, SchoolClass
+
+log = logging.getLogger(__name__)
 
 # "3-Б", "3 Б", "3б", "10-А"
 CLASS_RE = re.compile(r"^\s*(\d{1,2})\s*[-–—\s]?\s*([А-ЯЇІЄҐа-яїієґA-Za-z]?)\s*$")
@@ -75,6 +79,45 @@ async def create_classes(session: AsyncSession, raw: str) -> tuple[list[str], li
 
     await session.flush()
     return created, rejected
+
+
+async def ensure_classes(session: AsyncSession, names: list[str]) -> list[str]:
+    """Створити класи зі списку, яких ще немає.
+
+    Викликається при старті з SCHOOL_CLASSES. Наявних не чіпає й нічого не
+    видаляє: за класом, прибраним зі списку, лишається історія записів,
+    а сховати його з опитування можна через /off_class.
+    """
+    if not names:
+        return []
+    created, rejected = await create_classes(session, ", ".join(names))
+    if created:
+        log.info("Створено класи з конфігу: %s", ", ".join(created))
+
+    # Нерозпізнане не мовчимо: одрук у SCHOOL_CLASSES інакше просто зникає,
+    # і адміністратор дізнається про це, лише коли вчитель не знайде свій клас.
+    unknown = [r for r in rejected if "вже є" not in r]
+    if unknown:
+        log.warning("SCHOOL_CLASSES: не розпізнано — %s", ", ".join(unknown))
+    return created
+
+
+async def add_teacher_class(session: AsyncSession, teacher_id: int, class_id: int) -> None:
+    """Додати один клас, не чіпаючи решти.
+
+    Саме додати, а не перезаписати набір: set_teacher_classes видаляє все,
+    чого немає в переданому списку. Два майже одночасні тапи по різних
+    класах читали б набір до коміту сусіда й затирали одне одного.
+    """
+    try:
+        # UNIQUE(class_id, teacher_id) робить повтор безпечним; savepoint
+        # не дає конфлікту завалити всю сесію.
+        async with session.begin_nested():
+            session.add(
+                ClassAssignment(class_id=class_id, teacher_id=teacher_id, is_primary=True)
+            )
+    except IntegrityError:
+        log.debug("Клас %s уже закріплений за вчителем %s", class_id, teacher_id)
 
 
 async def set_teacher_classes(
