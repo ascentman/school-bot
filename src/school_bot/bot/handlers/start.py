@@ -188,20 +188,6 @@ async def receive_contact(
 
 
 # [^/\s], а не [^/]: інакше «\s*» бектрекає й " /help" проходить як ПІБ.
-@router.message(SelfRegister.classes)
-async def skip_class_picking(
-    message: Message, session: AsyncSession, teacher: Teacher, state: FSMContext
-) -> None:
-    """Текст замість натискання кнопки виводить зі стану вибору класів.
-
-    Симетрично до skip_full_name: інакше повідомлення провалюється у
-    fallback, стан лишається, і вчитель зависає в ньому до /start.
-    """
-    await state.clear()
-    await message.answer(texts.CLASS_PICKING_STOPPED)
-    await _greet(message, session, teacher)
-
-
 @router.message(Command("name"))
 async def change_name_start(message: Message, state: FSMContext) -> None:
     """Змінити власне ПІБ.
@@ -269,8 +255,11 @@ async def picked_class(
     state: FSMContext,
 ) -> None:
     school_class = await session.get(SchoolClass, callback_data.class_id)
-    if school_class is None:
-        await query.answer(texts.NOTHING_TO_EDIT, show_alert=True)
+    # Клавіатура не має терміну дії: клас могли прибрати через /off_class
+    # уже після її показу. Без перевірки звʼязок створюється, але у списку
+    # не видно — і підтвердження виходить порожнім.
+    if school_class is None or not school_class.is_active:
+        await query.answer(texts.CLASS_NO_LONGER_AVAILABLE, show_alert=True)
         return
 
     mine = {c.id for c in await classes_for_teacher(session, teacher.id)}
@@ -349,3 +338,19 @@ async def my_classes(
 async def help_command(message: Message, teacher: Teacher) -> None:
     await message.answer(texts.TEACHER_HELP)
 
+
+@router.message(SelfRegister.classes)
+async def skip_class_picking(
+    message: Message, session: AsyncSession, teacher: Teacher, state: FSMContext
+) -> None:
+    """Текст замість натискання кнопки виводить зі стану вибору класів.
+
+    Симетрично до skip_full_name: інакше повідомлення провалюється у
+    fallback, стан лишається, і вчитель зависає в ньому до /start.
+
+    Зареєстровано в кінці файлу навмисно: catch-all по стану перехоплює
+    все, зокрема /name і /help, тож він має стояти ПІСЛЯ їхніх хендлерів.
+    """
+    await state.clear()
+    await message.answer(texts.CLASS_PICKING_STOPPED)
+    await _greet(message, session, teacher)

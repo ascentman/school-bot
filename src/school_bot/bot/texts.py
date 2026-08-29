@@ -56,6 +56,7 @@ def class_picked(name: str, chosen: list[str]) -> str:
 
 
 ALL_CLASSES_PICKED = "Це всі класи, що є. Завершую."
+CLASS_NO_LONGER_AVAILABLE = "Цього класу вже немає в списку. Оберіть інший."
 CLASS_PICKING_STOPPED = (
     "Гаразд, вибір класів припинив. Якщо потрібен ще клас — "
     "зверніться до адміністратора."

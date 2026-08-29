@@ -755,3 +755,46 @@ async def test_text_during_class_picking_does_not_hang(send, tap, people, maker)
 
     # Стан очищено: наступне повідомлення обробляється як звичайне.
     assert any("Як це працює" in r for r in await send("/help", tg_id=1006))
+
+
+async def test_commands_work_during_class_picking(send, people):
+    """/name і /help не мають ковтатися станом вибору класів.
+
+    Для стану ПІБ цю пастку вже враховано порядком реєстрації, а для
+    нового стану порядок вийшов зворотний.
+    """
+    await send(tg_id=1007, contact=_own_contact(1007, "+380991111007"))
+    await send("Кравець Юрій", tg_id=1007)
+
+    replies = await send("/name", tg_id=1007)
+    assert any("Напишіть своє ПІБ" in r for r in replies), replies
+    assert not any("вибір класів припинив" in r.lower() for r in replies), replies
+
+
+async def test_help_works_during_class_picking(send, people):
+    await send(tg_id=1008, contact=_own_contact(1008, "+380991111008"))
+    await send("Савченко Ірина", tg_id=1008)
+
+    replies = await send("/help", tg_id=1008)
+    assert any("Як це працює" in r for r in replies), replies
+
+
+async def test_stale_button_cannot_add_a_disabled_class(send, tap, people, maker):
+    """Клавіатура вибору не має терміну дії: клас могли вимкнути після її показу."""
+    from school_bot.db.models import SchoolClass
+    from school_bot.domain.meals import classes_for_teacher
+
+    await send(tg_id=1009, contact=_own_contact(1009, "+380991111009"))
+    await send("Литвин Тетяна", tg_id=1009)
+
+    async with maker() as s:
+        klass = await s.get(SchoolClass, people["class_id"])
+        klass.is_active = False
+        await s.commit()
+
+    replies = await tap("1-А", tg_id=1009)
+
+    async with maker() as s:
+        teacher = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 1009))
+        assert await classes_for_teacher(s, teacher.id) == []
+    assert not any("Додано" in r for r in replies), replies
