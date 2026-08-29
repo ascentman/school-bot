@@ -92,3 +92,25 @@ async def test_xlsx_does_not_flag_future_days(session, classes, teacher):
     assert fill(6, 2) == "00FBD5D5"    # 02.09 минуло без запису — червоний
     assert fill(6, 3) != "00FBD5D5"    # 03.09 ще не настало — без заливки
     assert fill(6, 30) != "00FBD5D5"
+
+
+async def test_totals_row_never_contradicts_the_rows_above(session, classes, teacher):
+    """Підсумок має враховувати все, що є в рядках класів.
+
+    Раніше він рахувався лише для навчальних днів, тож запис, зроблений
+    у суботу (наприклад, відпрацювання або тестова розсилка), був видимий
+    у рядку класу, але зникав із підсумку — і перевірка бачила протиріччя.
+    """
+    saturday = date(2026, 9, 5)
+    await upsert_entry(
+        session, class_id=classes[0].id, d=saturday, eating_count=20, teacher_id=teacher.id
+    )
+    matrix = await build_month_matrix(session, 2026, 9)
+
+    row = next(r for r in matrix.rows if r.name == "1-А")
+    assert row.value(saturday) == 20
+    assert matrix.day_total(saturday) == 20, "підсумок ігнорує субботній запис"
+
+    ws = load_workbook(BytesIO(render_xlsx(matrix))).active
+    assert ws.cell(6, 1 + 5).value == 20        # рядок класу
+    assert ws.cell(9, 1 + 5).value == 20        # підсумковий рядок

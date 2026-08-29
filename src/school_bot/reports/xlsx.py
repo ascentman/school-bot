@@ -101,8 +101,9 @@ def build_workbook(matrix: MonthMatrix) -> Workbook:
 
     for i, col in enumerate(matrix.columns):
         c = FIRST_DATA_COL + i
-        value = matrix.day_total(col.date) if col.is_school_day else None
-        cell = ws.cell(tr, c, value)
+        # Без огляду на is_school_day: якщо в рядках класів цифра є,
+        # підсумок мусить її враховувати, інакше звіт суперечить сам собі.
+        cell = ws.cell(tr, c, matrix.day_total(col.date))
         cell.font = Font(bold=True)
         cell.fill = TOTAL_FILL
         cell.alignment = Alignment(horizontal="center")
