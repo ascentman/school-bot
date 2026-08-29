@@ -17,7 +17,7 @@ from school_bot.bot.callbacks import PickClass, PickDone
 from school_bot.bot.commands import set_personal_commands
 from school_bot.clock import today
 from school_bot.db.models import SchoolClass, Teacher
-from school_bot.domain.classes import set_teacher_classes
+from school_bot.domain.classes import add_teacher_class
 from school_bot.domain.meals import active_classes, classes_for_teacher, get_entry
 from school_bot.domain.teachers import clean_name, register_by_phone
 
@@ -262,8 +262,7 @@ async def picked_class(
         await query.answer(texts.CLASS_NO_LONGER_AVAILABLE, show_alert=True)
         return
 
-    mine = {c.id for c in await classes_for_teacher(session, teacher.id)}
-    await set_teacher_classes(session, teacher.id, mine | {school_class.id})
+    await add_teacher_class(session, teacher.id, school_class.id)
     chosen = [c.name for c in await classes_for_teacher(session, teacher.id)]
     log.info("Вчитель %s обрав клас %s", teacher.full_name, school_class.name)
 

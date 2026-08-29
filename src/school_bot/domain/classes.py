@@ -7,6 +7,7 @@ import re
 from datetime import date as Date
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from school_bot.db.models import ClassAssignment, SchoolClass
@@ -99,6 +100,24 @@ async def ensure_classes(session: AsyncSession, names: list[str]) -> list[str]:
     if unknown:
         log.warning("SCHOOL_CLASSES: не розпізнано — %s", ", ".join(unknown))
     return created
+
+
+async def add_teacher_class(session: AsyncSession, teacher_id: int, class_id: int) -> None:
+    """Додати один клас, не чіпаючи решти.
+
+    Саме додати, а не перезаписати набір: set_teacher_classes видаляє все,
+    чого немає в переданому списку. Два майже одночасні тапи по різних
+    класах читали б набір до коміту сусіда й затирали одне одного.
+    """
+    try:
+        # UNIQUE(class_id, teacher_id) робить повтор безпечним; savepoint
+        # не дає конфлікту завалити всю сесію.
+        async with session.begin_nested():
+            session.add(
+                ClassAssignment(class_id=class_id, teacher_id=teacher_id, is_primary=True)
+            )
+    except IntegrityError:
+        log.debug("Клас %s уже закріплений за вчителем %s", class_id, teacher_id)
 
 
 async def set_teacher_classes(
