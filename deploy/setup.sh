@@ -4,6 +4,7 @@
 set -euo pipefail
 
 REPO="https://github.com/ascentman/school-bot.git"
+BRANCH="${BRANCH:-main}"
 APP_USER="bot"
 APP_DIR="/opt/school-bot"
 
@@ -34,11 +35,18 @@ say "Користувач $APP_USER"
 id -u "$APP_USER" &>/dev/null || useradd --create-home --shell /bin/bash "$APP_USER"
 
 say "Файрвол: назовні лише SSH"
+# Порт беремо зі sshd_config, а не зашиваємо 22: якщо адміністратор
+# переніс SSH на інший порт, жорсткий allow 22 замкнув би його назовні.
+SSH_PORTS=$(sshd -T 2>/dev/null | awk '/^port /{print $2}')
+[ -z "$SSH_PORTS" ] && SSH_PORTS=$(awk '/^[[:space:]]*Port[[:space:]]/{print $2}' /etc/ssh/sshd_config)
+[ -z "$SSH_PORTS" ] && SSH_PORTS=22
+echo "  SSH слухає порти: $SSH_PORTS"
+
 # Бот сам ходить до Telegram і Google, вхідних портів йому не треба.
 ufw --force reset >/dev/null
 ufw default deny incoming >/dev/null
 ufw default allow outgoing >/dev/null
-ufw allow 22/tcp >/dev/null
+for port in $SSH_PORTS; do ufw allow "$port"/tcp >/dev/null; done
 ufw --force enable >/dev/null
 
 say "fail2ban проти перебору SSH"
@@ -49,10 +57,10 @@ su - "$APP_USER" -c 'command -v uv >/dev/null || curl -LsSf https://astral.sh/uv
 
 say "Код"
 if [ -d "$APP_DIR/.git" ]; then
-    su - "$APP_USER" -c "cd $APP_DIR && git fetch --quiet origin && git reset --hard --quiet origin/main"
+    su - "$APP_USER" -c "cd $APP_DIR && git fetch --quiet origin && git reset --hard --quiet origin/$BRANCH"
 else
     mkdir -p "$APP_DIR" && chown "$APP_USER:$APP_USER" "$APP_DIR"
-    su - "$APP_USER" -c "git clone --quiet $REPO $APP_DIR"
+    su - "$APP_USER" -c "git clone --quiet --branch $BRANCH $REPO $APP_DIR"
 fi
 
 say "Залежності"
@@ -90,7 +98,9 @@ RestrictSUIDSGID=true
 WantedBy=multi-user.target
 UNIT
 
-mkdir -p "$APP_DIR/data" "$APP_DIR/reports_out"
+# secrets/ у .gitignore, тож клон його не створює — а scp у неіснуючий
+# каталог падає з «No such file or directory».
+mkdir -p "$APP_DIR/data" "$APP_DIR/reports_out" "$APP_DIR/secrets"
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 systemctl daemon-reload
 systemctl enable school-bot >/dev/null
@@ -119,6 +129,13 @@ WantedBy=timers.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now school-bot-backup.timer >/dev/null
+
+# Повторний запуск оновлює код — але процес продовжив би працювати зі
+# старою версією, поки хтось не перезапустить вручну.
+if systemctl is-active --quiet school-bot; then
+    say "Перезапуск служби з оновленим кодом"
+    systemctl restart school-bot
+fi
 
 say "Готово"
 cat <<'NEXT'
