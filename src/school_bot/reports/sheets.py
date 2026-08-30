@@ -74,7 +74,7 @@ def matrix_to_grid(matrix: MonthMatrix) -> list[list[Any]]:
 
     totals: list[Any] = ["Разом"]
     for col in matrix.columns:
-        v = matrix.day_total(col.date) if col.is_school_day else None
+        v = matrix.day_total(col.date)
         totals.append("" if v is None else v)
     totals.append(matrix.grand_total)
     grid.append(totals)

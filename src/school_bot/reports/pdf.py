@@ -83,7 +83,7 @@ def render_pdf(matrix: MonthMatrix) -> bytes:
 
     totals = ["Разом"]
     for col in matrix.columns:
-        v = matrix.day_total(col.date) if col.is_school_day else None
+        v = matrix.day_total(col.date)
         totals.append("" if v is None else str(v))
     totals.append(str(matrix.grand_total))
     data.append(totals)
