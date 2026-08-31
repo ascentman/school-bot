@@ -48,8 +48,8 @@ def test_every_settings_attribute_exists():
 
 def test_defaults_match_agreed_schedule():
     assert settings.prompt_time == time(9, 5)
-    assert settings.remind_times == [time(9, 30), time(9, 45)]
-    assert settings.digest_time == time(10, 0)
+    assert settings.remind_times == [time(9, 15), time(9, 30)]
+    assert settings.digest_time == time(9, 45)
 
 
 def test_schedule_is_chronological():
@@ -60,8 +60,8 @@ def test_schedule_is_chronological():
 
 
 def test_remind_times_parsed_from_env_string():
-    s = Settings(remind_times="09:45, 09:30")
-    assert s.remind_times == [time(9, 30), time(9, 45)]
+    s = Settings(remind_times="09:30, 09:15")
+    assert s.remind_times == [time(9, 15), time(9, 30)]
 
 
 def test_remind_times_deduplicated():
@@ -87,7 +87,7 @@ def test_env_example_parses(tmp_path: Path):
 
     s = Settings(_env_file=env)
     assert s.prompt_time == time(9, 5)
-    assert s.remind_times == [time(9, 30), time(9, 45)]
+    assert s.remind_times == [time(9, 15), time(9, 30)]
     assert s.catch_up_deadline == time(15, 0)
     assert s.misfire_grace_seconds == 7200
     assert s.school_name and "#" not in s.school_name
