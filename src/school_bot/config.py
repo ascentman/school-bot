@@ -43,9 +43,9 @@ class Settings(BaseSettings):
 
     prompt_time: time = time(9, 5)
     remind_times: Annotated[list[time], NoDecode] = Field(
-        default_factory=lambda: [time(9, 30), time(9, 45)]
+        default_factory=lambda: [time(9, 15), time(9, 30)]
     )
-    digest_time: time = time(10, 0)
+    digest_time: time = time(9, 45)
     sheets_rebuild_time: time = time(20, 0)
 
     # Після цієї години догоняюча розсилка вже не має сенсу: навчальний день

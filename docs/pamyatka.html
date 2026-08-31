@@ -1,0 +1,472 @@
+<title>Бот харчування 44 школи</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,400;7..72,600;7..72,700&family=Fira+Sans:wght@400;500;600;700&display=swap">
+
+<style>
+  :root {
+    --paper:      #FCFCFA;
+    --card:       #FFFFFF;
+    --ink:        #1A1D21;
+    --ink-soft:   #5C6470;
+    --rule:       #DDE1E6;
+    --blue:       #2A4E7C;
+    --blue-wash:  #EDF1F6;
+    --red:        #C4462F;
+    --red-wash:   #FBEEEB;
+    --screen:     #F2F4F7;
+    --on-blue:    #FFFFFF;
+    --shadow: 0 1px 2px rgba(26,29,33,.06), 0 6px 16px rgba(26,29,33,.05);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:     #15171A;
+      --card:      #1D2024;
+      --ink:       #ECEEF1;
+      --ink-soft:  #9BA3AE;
+      --rule:      #2F343A;
+      --blue:      #8FB3DC;
+      --blue-wash: #212A35;
+      --red:       #E8836C;
+      --red-wash:  #33221E;
+      --screen:    #262A2F;
+      --on-blue:   #15171A;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 16px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:     #15171A;
+    --card:      #1D2024;
+    --ink:       #ECEEF1;
+    --ink-soft:  #9BA3AE;
+    --rule:      #2F343A;
+    --blue:      #8FB3DC;
+    --blue-wash: #212A35;
+    --red:       #E8836C;
+    --red-wash:  #33221E;
+    --screen:    #262A2F;
+    --on-blue:   #15171A;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 16px rgba(0,0,0,.3);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Fira Sans", "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .sheet {
+    width: 210mm;
+    max-width: 100%;
+    margin: 0 auto;
+    padding: 13mm 14mm 11mm;
+  }
+
+  /* ── шапка ─────────────────────────────────────────── */
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--ink);
+  }
+  h1 {
+    font-family: Literata, Georgia, serif;
+    font-weight: 700;
+    font-size: 27px;
+    line-height: 1.1;
+    margin: 0;
+    text-wrap: balance;
+    letter-spacing: -0.01em;
+  }
+  .lede {
+    font-size: 13px;
+    color: var(--ink-soft);
+    margin: 5px 0 0;
+    max-width: 62ch;
+  }
+  .botlink {
+    display: inline-block;
+    text-decoration: none;
+    font-family: Literata, Georgia, serif;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--blue);
+    white-space: nowrap;
+    padding: 5px 11px;
+    background: var(--blue-wash);
+    border-radius: 3px;
+    border: 1px solid transparent;
+  }
+  .botlink:hover { border-color: var(--blue); }
+  .botlink:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+  .once {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 14px 0 9px;
+  }
+  .once::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--rule);
+  }
+  .once b {
+    font-family: "Fira Sans", sans-serif;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  /* ── картки кроків ─────────────────────────────────── */
+  .steps {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 9px;
+  }
+  .step {
+    display: grid;
+    grid-template-columns: 26px 1fr;
+    gap: 10px;
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 11px 12px;
+    box-shadow: var(--shadow);
+  }
+  .n {
+    font-family: Literata, Georgia, serif;
+    font-size: 25px;
+    font-weight: 700;
+    line-height: .9;
+    color: var(--blue);
+    font-variant-numeric: tabular-nums;
+  }
+  .step h2 {
+    font-family: Literata, Georgia, serif;
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 0 4px;
+    line-height: 1.2;
+  }
+  .step p { margin: 0 0 7px; font-size: 12.5px; color: var(--ink-soft); }
+  .step p:last-child { margin-bottom: 0; }
+  .step em { font-style: normal; color: var(--ink); font-weight: 500; }
+
+  /* ── екрани телефона ───────────────────────────────── */
+  .scr {
+    background: var(--screen);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 7px 8px;
+    font-size: 11.5px;
+    line-height: 1.35;
+  }
+  .msg { color: var(--ink); margin-bottom: 6px; }
+  .msg:last-child { margin-bottom: 0; }
+  .btn {
+    display: inline-block;
+    background: var(--card);
+    border: 1px solid var(--blue);
+    color: var(--blue);
+    border-radius: 4px;
+    padding: 4px 9px;
+    font-size: 11.5px;
+    font-weight: 600;
+    margin: 2px 3px 2px 0;
+  }
+  .btn.solid {
+    background: var(--blue);
+    border-color: var(--blue);
+    color: var(--on-blue);
+  }
+
+  .typed {
+    background: var(--card);
+    border: 1px dashed var(--rule);
+    border-radius: 4px;
+    padding: 5px 8px;
+    color: var(--ink-soft);
+    font-size: 11.5px;
+  }
+  .grid4 { display: flex; flex-wrap: wrap; gap: 3px; }
+  .grid4 .btn { margin: 0; padding: 3px 7px; font-size: 11px; }
+
+  /* ── щоденна смуга ─────────────────────────────────── */
+  .daily {
+    margin-top: 12px;
+    border: 1.5px solid var(--red);
+    border-radius: 4px;
+    background: var(--red-wash);
+    padding: 12px 14px;
+    display: grid;
+    grid-template-columns: 26px 1fr 232px;
+    gap: 12px;
+    align-items: start;
+  }
+  .daily .n { color: var(--red); }
+  .daily h2 { font-family: Literata, Georgia, serif; font-size: 16px; margin: 0 0 4px; }
+  .daily p { margin: 0 0 6px; font-size: 12.5px; color: var(--ink-soft); }
+  .daily p:last-child { margin-bottom: 0; }
+  .daily .btn { border-color: var(--red); color: var(--red); background: var(--card); }
+  .daily .hi { border-width: 2px; font-weight: 700; }
+  .daily strong { color: var(--ink); }
+
+  .numpad { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin: 5px 0; }
+  .numpad .btn { margin: 0; text-align: center; padding: 4px 0; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+
+  /* ── виправлення ───────────────────────────────────── */
+  .fix {
+    margin-top: 9px;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--card);
+    padding: 11px 14px;
+    display: grid;
+    grid-template-columns: 26px 1fr 232px;
+    gap: 12px;
+    align-items: start;
+    box-shadow: var(--shadow);
+  }
+  .fix .n { color: var(--red); }
+  .fix h2 { font-family: Literata, Georgia, serif; font-size: 15px; margin: 0 0 4px; }
+  .fix > div > p { margin: 0 0 7px; font-size: 12.5px; color: var(--ink-soft); }
+  .fix em { font-style: normal; color: var(--ink); font-weight: 600; }
+  .fix .btn { border-color: var(--red); color: var(--red); }
+  .ways {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    font-size: 12px;
+    color: var(--ink-soft);
+  }
+  .way {
+    display: block;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ink);
+    margin-bottom: 2px;
+  }
+
+  /* ── підвал ────────────────────────────────────────── */
+  footer {
+    margin-top: 12px;
+    padding-top: 9px;
+    border-top: 1px solid var(--rule);
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 22px;
+    font-size: 11.5px;
+    color: var(--ink-soft);
+  }
+  footer h3 {
+    font-family: "Fira Sans", sans-serif;
+    font-size: 10.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink);
+    margin: 0 0 3px;
+  }
+  footer code {
+    font-family: inherit;
+    color: var(--blue);
+    font-weight: 600;
+  }
+
+  /* ── телефон ───────────────────────────────────────── */
+  /* Аркуш A4 читають з екрана в руці: тип більший, колонки в одну,
+     макети екранів на всю ширину, посилання — велика кнопка. */
+  @media (max-width: 720px) {
+    body { font-size: 16px; }
+    .sheet { width: auto; padding: 22px 18px 28px; }
+
+    header { flex-direction: column; align-items: stretch; gap: 14px; }
+    h1 { font-size: 25px; }
+    .lede { font-size: 15px; }
+    .botlink {
+      order: -1;
+      text-align: center;
+      font-size: 17px;
+      padding: 13px 16px;
+      border-radius: 6px;
+    }
+
+    .steps, .ways, footer { grid-template-columns: 1fr; }
+    .steps { gap: 12px; }
+    footer { gap: 16px; }
+    .ways { gap: 12px; }
+
+    .step, .daily, .fix {
+      grid-template-columns: 30px 1fr;
+      padding: 14px 15px;
+    }
+    .daily .scr, .fix .scr { grid-column: 1 / -1; margin-top: 4px; }
+
+    .n { font-size: 28px; }
+    .step h2, .fix h2 { font-size: 17px; }
+    .daily h2 { font-size: 18px; }
+    .step p, .daily p, .fix > div > p { font-size: 14.5px; }
+    .ways { font-size: 14px; }
+
+    .scr { font-size: 13.5px; padding: 10px 11px; }
+    .btn { font-size: 13.5px; padding: 7px 12px; }
+    .grid4 .btn { font-size: 13px; padding: 6px 11px; }
+    .numpad { gap: 5px; }
+    .numpad .btn { padding: 8px 0; font-size: 14px; }
+    .typed { font-size: 13.5px; padding: 8px 10px; }
+    footer { font-size: 14px; }
+  }
+
+  @media print {
+    @page { size: A4 portrait; margin: 0; }
+    body { background: #fff; }
+    .sheet { padding: 10mm 12mm; }
+    .step, .scr, .daily, .fix { box-shadow: none; }
+  }
+</style>
+
+<div class="sheet">
+
+  <header>
+    <div>
+      <h1>Облік харчування — що робити вчителю</h1>
+      <p class="lede">Реєстрація займає дві хвилини й робиться один раз. Далі щоранку бот сам питає, скільки дітей харчується — ви відповідаєте одним дотиком.</p>
+    </div>
+    <a class="botlink" href="https://t.me/school44_bot">t.me/school44_bot</a>
+  </header>
+
+  <div class="once"><b>Один раз — реєстрація</b></div>
+
+  <div class="steps">
+
+    <div class="step">
+      <div class="n">1</div>
+      <div>
+        <h2>Відкрийте посилання</h2>
+        <p>Внизу екрана з’явиться синя кнопка. Натисніть її.</p>
+        <div class="scr">
+          <div class="msg">👋 Вітаю! Це бот обліку харчування учнів.</div>
+          <div class="btn solid">ПОЧАТИ</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="n">2</div>
+      <div>
+        <h2>Поділіться номером</h2>
+        <p>Так бот упізнає вас. Номер більше нікуди не передається.</p>
+        <div class="scr">
+          <div class="msg">Натисніть кнопку нижче — Telegram надішле мені ваш номер телефону.</div>
+          <div class="btn">📱 Поділитися номером</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="n">3</div>
+      <div>
+        <h2>Напишіть своє ПІБ</h2>
+        <p>Повністю, як у документах — воно потрапить у звіти.</p>
+        <div class="scr">
+          <div class="msg">Дякую! Тепер напишіть, будь ласка, своє ПІБ.</div>
+          <div class="typed">Коваленко Марія Іванівна</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="n">4</div>
+      <div>
+        <h2>Оберіть свій клас</h2>
+        <p>Ведете кілька? Натисніть <em>➕ Ще один клас</em> і оберіть наступний.</p>
+        <div class="scr">
+          <div class="msg">Оберіть свій клас:</div>
+          <div class="grid4">
+            <span class="btn">1-А</span><span class="btn">1-Б</span><span class="btn">1-В</span>
+            <span class="btn">2-А</span><span class="btn">2-Б</span><span class="btn">3-А</span>
+          </div>
+          <div class="msg" style="margin-top:6px">
+            <span class="btn">➕ Ще один клас</span><span class="btn solid">✅ Це все</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="daily">
+    <div class="n">5</div>
+    <div>
+      <h2>Щоранку о 9:05 — один дотик</h2>
+      <p>Бот надішле окреме повідомлення <strong>по кожному вашому класу</strong>. Знайдіть потрібну цифру й натисніть її — писати нічого не треба.</p>
+      <p><strong>Кнопка вгорі</strong> — скільки було минулого разу. Найчастіше саме її й треба.</p>
+      <p><em>0 — немає</em> · якщо сьогодні клас не харчується.<br>
+         <em>✏️ Інша цифра</em> · якщо потрібного числа немає на екрані.</p>
+    </div>
+    <div class="scr">
+      <div class="msg"><strong>📋 3-Б</strong> · вівторок, 1 вересня<br>Скільки дітей сьогодні харчуються?</div>
+      <div class="btn hi" style="width:100%;text-align:center">↩︎ Як минулого разу: 24</div>
+      <div class="numpad">
+        <span class="btn">17</span><span class="btn">18</span><span class="btn">19</span><span class="btn">20</span>
+        <span class="btn">21</span><span class="btn">22</span><span class="btn">23</span><span class="btn">24</span>
+        <span class="btn">25</span><span class="btn">26</span><span class="btn">27</span><span class="btn">28</span>
+      </div>
+      <div><span class="btn">0 — немає</span><span class="btn">✏️ Інша цифра</span></div>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="n">6</div>
+    <div>
+      <h2>Дитина прийшла пізніше — виправте цифру</h2>
+      <p>Відповідь не остаточна. Змінити її можна будь-коли протягом дня — двома способами.</p>
+      <div class="ways">
+        <div>
+          <span class="way">У тому самому повідомленні</span>
+          Під вашою відповіддю є кнопка <em>✏️ Виправити</em>. Натисніть — і сітка цифр повернеться.
+        </div>
+        <div>
+          <span class="way">Якщо повідомлення загубилося</span>
+          Кнопка <em>📋 Мої класи</em> внизу екрана. Там видно всі ваші класи й що вже подано.
+        </div>
+      </div>
+    </div>
+    <div class="scr">
+      <div class="msg">✅ <strong>3-Б</strong> · 1 вересня — <strong>24 дитини</strong><br>
+        <span style="color:var(--ink-soft)">Записано о 09:07.</span></div>
+      <div class="btn hi">✏️ Виправити</div>
+      <div class="msg" style="margin-top:7px;color:var(--ink-soft)">↓ після виправлення</div>
+      <div class="msg">✅ <strong>3-Б</strong> · 1 вересня — <strong>26 дітей</strong><br>
+        <span style="color:var(--ink-soft)">Виправлено о 11:20.</span></div>
+    </div>
+  </div>
+
+  <footer>
+    <div>
+      <h3>Забули відповісти</h3>
+      О 9:15 і 9:30 бот нагадає. Внести дані можна будь-коли —
+      кнопка <code>📋 Мої класи</code> внизу екрана.
+    </div>
+    <div>
+      <h3>Коли бот мовчить</h3>
+      У суботу, неділю та на канікулах запитів немає. Це нормально.
+    </div>
+  </footer>
+
+</div>
