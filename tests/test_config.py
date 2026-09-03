@@ -49,7 +49,7 @@ def test_every_settings_attribute_exists():
 def test_defaults_match_agreed_schedule():
     assert settings.prompt_time == time(9, 5)
     assert settings.remind_times == [time(9, 15), time(9, 30)]
-    assert settings.digest_time == time(9, 45)
+    assert settings.digest_time == time(9, 35)
 
 
 def test_schedule_is_chronological():

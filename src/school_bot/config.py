@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from school_bot.domain.slots import MealSlot, parse_meal_slots
+
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 # Тести мають бачити дефолти з коду, а не .env розробника — інакше вони
@@ -45,8 +47,13 @@ class Settings(BaseSettings):
     remind_times: Annotated[list[time], NoDecode] = Field(
         default_factory=lambda: [time(9, 15), time(9, 30)]
     )
-    digest_time: time = time(9, 45)
+    digest_time: time = time(9, 35)
     sheets_rebuild_time: time = time(20, 0)
+
+    # Розклад роздачі: у якому порядку класи йдуть до їдальні. Впливає лише на
+    # щоденний PDF — саме так його читає перевірка. Порожній список означає
+    # простий перелік класів без розбивки на зміни.
+    meal_slots: Annotated[list[MealSlot], NoDecode] = Field(default_factory=list)
 
     # Після цієї години догоняюча розсилка вже не має сенсу: навчальний день
     # закінчився, і запит о 19:00 лише дратуватиме вчителя.
@@ -79,6 +86,14 @@ class Settings(BaseSettings):
         """Дозволяє записати SCHOOL_CLASSES=1-А,1-Б,2-А у .env."""
         if isinstance(v, str):
             return [part.strip() for part in v.split(",") if part.strip()]
+        return v
+
+    @field_validator("meal_slots", mode="before")
+    @classmethod
+    def _parse_meal_slots(cls, v: object) -> object:
+        """Дозволяє записати MEAL_SLOTS=08:45-09:00 = 3-А,3-Б; ... у .env."""
+        if isinstance(v, str):
+            return parse_meal_slots(v)
         return v
 
     @field_validator("remind_times", mode="before")

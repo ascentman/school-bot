@@ -17,6 +17,11 @@ log = logging.getLogger(__name__)
 # "3-Б", "3 Б", "3б", "10-А"
 CLASS_RE = re.compile(r"^\s*(\d{1,2})\s*[-–—\s]?\s*([А-ЯЇІЄҐа-яїієґA-Za-z]?)\s*$")
 
+# Латинські двійники кирилиці. "10-A" з латинською A виглядає точно як "10-А",
+# але це інший рядок: клас або дублюється, або не знаходиться там, де його шукають.
+# Розкладку легко зачепити, копіюючи список класів із чужого документа.
+LATIN_LOOKALIKES = str.maketrans("ABCEHIKMOPTX", "АВСЕНІКМОРТХ")
+
 DATE_RE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})")
 
 
@@ -28,7 +33,7 @@ def parse_class_name(raw: str) -> tuple[str, int, str] | None:
     grade = int(m.group(1))
     if not 1 <= grade <= 12:
         return None
-    letter = m.group(2).upper()
+    letter = m.group(2).upper().translate(LATIN_LOOKALIKES)
     name = f"{grade}-{letter}" if letter else str(grade)
     return name, grade, letter
 

@@ -1,4 +1,4 @@
-"""Експорт місячного табеля в PDF (альбомна орієнтація, A4)."""
+"""Експорт у PDF: місячний табель (альбомна A4) і звіт за день (книжкова A4)."""
 
 from __future__ import annotations
 
@@ -12,39 +12,77 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from school_bot.domain.dates import format_date, plural_children
+from school_bot.reports.day import DayReport
 from school_bot.reports.matrix import MonthMatrix
 
 # Кирилиця: вбудовані шрифти reportlab її не мають, тому шукаємо системний.
+# Жирне накреслення йде парою до звичайного: підмішувати жирний з іншої
+# гарнітури не можна — у таблиці це видно як стрибок ширини літер.
 _FONT_CANDIDATES = [
-    ("DejaVuSans", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-    ("DejaVuSans", "/opt/homebrew/share/fonts/DejaVuSans.ttf"),
-    ("ArialUnicode", "/Library/Fonts/Arial Unicode.ttf"),
-    ("Helvetica-Sys", "/System/Library/Fonts/Helvetica.ttc"),
-    ("Supplemental-Arial", "/System/Library/Fonts/Supplemental/Arial.ttf"),
+    (
+        "DejaVuSans",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ),
+    (
+        "DejaVuSans",
+        "/opt/homebrew/share/fonts/DejaVuSans.ttf",
+        "/opt/homebrew/share/fonts/DejaVuSans-Bold.ttf",
+    ),
+    (
+        "Supplemental-Arial",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    ),
+    ("ArialUnicode", "/Library/Fonts/Arial Unicode.ttf", None),
+    ("Helvetica-Sys", "/System/Library/Fonts/Helvetica.ttc", None),
 ]
 
 _font_name: str | None = None
+_bold_name: str | None = None
 
 
-def _cyrillic_font() -> str:
-    """Зареєструвати перший знайдений шрифт з кирилицею."""
-    global _font_name
-    if _font_name is not None:
-        return _font_name
+def _register() -> None:
+    """Зареєструвати перший знайдений шрифт з кирилицею (і його жирну пару)."""
+    global _font_name, _bold_name
 
     from pathlib import Path
 
-    for name, path in _FONT_CANDIDATES:
-        if Path(path).exists():
-            try:
-                pdfmetrics.registerFont(TTFont(name, path))
-                _font_name = name
-                return name
-            except Exception:  # noqa: BLE001 — шрифт може бути .ttc з кількома гранями
-                continue
+    for name, regular, bold in _FONT_CANDIDATES:
+        if not Path(regular).exists():
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont(name, regular))
+        except Exception:  # noqa: BLE001 — шрифт може бути .ttc з кількома гранями
+            continue
 
-    _font_name = "Helvetica"  # запасний варіант: латиниця відрендериться, кирилиця — ні
+        _font_name = name
+        _bold_name = name  # запасний варіант, якщо жирного немає поруч
+        if bold and Path(bold).exists():
+            try:
+                pdfmetrics.registerFont(TTFont(f"{name}-Bold", bold))
+                _bold_name = f"{name}-Bold"
+            except Exception:  # noqa: BLE001
+                pass
+        return
+
+    # Латиниця відрендериться, кирилиця — ні. Краще, ніж падіння звіту.
+    _font_name = _bold_name = "Helvetica"
+
+
+def _cyrillic_font() -> str:
+    if _font_name is None:
+        _register()
+    assert _font_name is not None
     return _font_name
+
+
+def _bold_font() -> str:
+    if _bold_name is None:
+        _register()
+    assert _bold_name is not None
+    return _bold_name
 
 
 def render_pdf(matrix: MonthMatrix) -> bytes:
@@ -119,6 +157,104 @@ def render_pdf(matrix: MonthMatrix) -> bytes:
 
     table.setStyle(TableStyle(style))
     story.append(table)
+    story.append(
+        Paragraph("Відповідальна особа: ______________________&nbsp;&nbsp;&nbsp;&nbsp;"
+                  "Дата: ______________", foot_style)
+    )
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+def render_day_pdf(report: DayReport) -> bytes:
+    """Звіт за один день: дата, загальна цифра, класи по змінах роздачі.
+
+    Порядок рядків повторює порядок роздачі, а не алфавіт: саме так звіт
+    читають на місці — зміна за зміною, звіряючи з тим, що на роздачі.
+    """
+    font = _cyrillic_font()
+    bold = _bold_font()
+    buf = BytesIO()
+    day_title = f"{format_date(report.date, with_weekday=True)} {report.date.year} р."
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=15 * mm,
+        bottomMargin=15 * mm,
+        title=f"Облік харчування — {day_title}",
+    )
+
+    title_style = ParagraphStyle("dt", fontName=bold, fontSize=15, alignment=1, spaceAfter=9)
+    sub_style = ParagraphStyle(
+        "ds", fontName=font, fontSize=10.5, alignment=1, spaceAfter=11,
+        textColor=colors.HexColor("#555555"),
+    )
+    date_style = ParagraphStyle("dd", fontName=bold, fontSize=12, alignment=1, spaceAfter=3)
+    total_style = ParagraphStyle("dtot", fontName=font, fontSize=12, alignment=1, spaceAfter=10)
+    note_style = ParagraphStyle("dn", fontName=font, fontSize=9, spaceBefore=8)
+    foot_style = ParagraphStyle("df", fontName=font, fontSize=9, spaceBefore=14)
+
+    story = [Paragraph("Облік харчування учнів", title_style)]
+    if report.school_name:
+        story.append(Paragraph(report.school_name, sub_style))
+    story.append(Paragraph(day_title, date_style))
+    story.append(
+        Paragraph(f"Разом на харчуванні: <b>{plural_children(report.total)}</b>", total_style)
+    )
+
+    data: list[list[str]] = [["Клас", "Дітей"]]
+    # Рядки-заголовки змін фарбуються окремо від рядків класів, тому їхні
+    # номери запамʼятовуємо просто під час збирання таблиці.
+    group_rows: list[int] = []
+    for group in report.groups:
+        if group.label:
+            group_rows.append(len(data))
+            # Зміна без жодної поданої цифри — це не нуль порцій, а брак даних.
+            data.append([group.label, str(group.total) if group.has_data else "—"])
+        for cell in group.cells:
+            data.append([cell.name, "—" if cell.count is None else str(cell.count)])
+    data.append(["РАЗОМ", str(report.total)])
+
+    table = Table(data, colWidths=[62 * mm, 28 * mm], repeatRows=1, hAlign="CENTER")
+    style = [
+        ("FONTNAME", (0, 0), (-1, -1), font),
+        ("FONTNAME", (0, 0), (-1, 0), bold),
+        ("FONTNAME", (0, -1), (-1, -1), bold),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ALIGN", (1, 0), (1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#B0B0B0")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DDE5F0")),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#E8F0E4")),
+        # Класи — з відступом, щоб зміна читалася як заголовок над ними.
+        ("LEFTPADDING", (0, 1), (0, -1), 16),
+        # Щільно свідомо: школа на 25 класів має вміщатися на одну сторінку —
+        # підписують і підшивають саме аркуш, а не два.
+        ("TOPPADDING", (0, 0), (-1, -1), 1.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+    ]
+    for r in group_rows:
+        style += [
+            ("BACKGROUND", (0, r), (-1, r), colors.HexColor("#EDF1F7")),
+            ("FONTNAME", (0, r), (-1, r), bold),
+            ("LEFTPADDING", (0, r), (0, r), 6),
+            ("LINEABOVE", (0, r), (-1, r), 0.6, colors.HexColor("#8A9BB4")),
+        ]
+    table.setStyle(TableStyle(style))
+    story.append(table)
+
+    # Пропуск і нуль — різні речі: «—» означає, що клас не подав цифру, і в
+    # сумі його немає. Без цього рядка звіт виглядав би повним.
+    if report.missing:
+        story.append(
+            Paragraph(
+                f"Не подали дані ({len(report.missing)}): " + ", ".join(report.missing),
+                note_style,
+            )
+        )
+
     story.append(
         Paragraph("Відповідальна особа: ______________________&nbsp;&nbsp;&nbsp;&nbsp;"
                   "Дата: ______________", foot_style)

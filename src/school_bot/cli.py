@@ -29,8 +29,9 @@ from school_bot.domain.meals import active_classes, day_summary, upsert_entry
 from school_bot.domain.phones import format_phone
 from school_bot.domain.teachers import import_teachers
 from school_bot.reports import sheets
+from school_bot.reports.day import build_day_report, day_report_filename
 from school_bot.reports.matrix import available_months, build_month_matrix
-from school_bot.reports.pdf import render_pdf
+from school_bot.reports.pdf import render_day_pdf, render_pdf
 from school_bot.reports.xlsx import render_xlsx
 from school_bot.scheduler import jobs
 
@@ -140,6 +141,34 @@ def report(
             f"  {matrix.title}: {matrix.grand_total} порцій, "
             f"{len(matrix.elapsed_school_days)} навч. дн. минуло, "
             f"незаповнених — {matrix.missing_total}"
+        )
+
+    asyncio.run(_go())
+
+
+@app.command("day-report")
+def day_report(
+    date: str = typer.Option(None, help="Дата РРРР-ММ-ДД. Без параметра — сьогодні."),
+    out: Path = typer.Option(Path("reports_out"), help="Куди зберегти"),
+) -> None:
+    """Згенерувати PDF-звіт за день у файл."""
+    _setup_logging()
+    d = _parse_date(date)      # без параметра — сьогодні
+
+    async def _go() -> None:
+        await ensure_schema()
+        out.mkdir(parents=True, exist_ok=True)
+        async with SessionMaker() as session:
+            report = await build_day_report(
+                session, d, school_name=settings.school_name, slots=settings.meal_slots
+            )
+
+        path = out / day_report_filename(d)
+        path.write_bytes(render_day_pdf(report))
+        typer.echo(f"✔ {path}")
+        typer.echo(
+            f"  {d}: {report.total} порцій, подали {report.submitted} з {report.expected}"
+            + (f", не подали — {', '.join(report.missing)}" if report.missing else "")
         )
 
     asyncio.run(_go())
