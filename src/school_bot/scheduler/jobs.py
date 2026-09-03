@@ -34,8 +34,8 @@ from school_bot.domain.meals import (
     last_known_count,
     primary_teacher_ids,
 )
-from school_bot.reports import sheets
-from school_bot.reports.day import build_report, day_report_filename
+from school_bot.reports import mailer, sheets
+from school_bot.reports.day import DayReport, build_report, day_report_filename
 from school_bot.reports.matrix import available_months, build_month_matrix
 from school_bot.reports.pdf import render_day_pdf
 
@@ -145,13 +145,16 @@ async def _send_document(bot: Bot, chat_id: int, document: BufferedInputFile) ->
         return False
 
 
-def day_pdf_attachment(summary: DaySummary) -> BufferedInputFile | None:
-    """PDF за день як вкладення, або None, якщо його не вдалося побудувати.
+def day_pdf(summary: DaySummary) -> tuple[DayReport, bytes] | None:
+    """Звіт за день і його PDF, або None, якщо побудувати не вдалося.
 
-    Рендер не має права зірвати зведення: до цієї фічі текстове зведення від
-    PDF не залежало взагалі, і воно ж несе головні цифри. Виняток із ReportLab
+    Рендер не має права зірвати зведення: до появи PDF текстове зведення від
+    нього не залежало взагалі, і воно ж несе головні цифри. Виняток із ReportLab
     інакше вилетів би ще до першої розсилки — і того дня адміни не отримали б
     нічого, замість «текст без файлу».
+
+    Повертає і звіт, і байти: той самий PDF іде у Telegram і в лист, а звіт
+    потрібен для теми й тіла листа. Будувати його двічі — зайвий шанс розійтися.
     """
     if not summary.statuses:
         return None
@@ -159,12 +162,19 @@ def day_pdf_attachment(summary: DaySummary) -> BufferedInputFile | None:
         report = build_report(
             summary, school_name=settings.school_name, slots=settings.meal_slots
         )
-        return BufferedInputFile(
-            render_day_pdf(report), filename=day_report_filename(summary.date)
-        )
+        return report, render_day_pdf(report)
     except Exception:
         log.exception("Не вдалося побудувати PDF за %s — надішлю саме зведення", summary.date)
         return None
+
+
+def day_pdf_attachment(summary: DaySummary) -> BufferedInputFile | None:
+    """PDF за день як вкладення Telegram."""
+    built = day_pdf(summary)
+    if built is None:
+        return None
+    report, pdf = built
+    return BufferedInputFile(pdf, filename=day_report_filename(report.date))
 
 
 async def _admin_chat_ids(session: AsyncSession) -> list[int]:
@@ -317,7 +327,12 @@ async def admin_digest(
 
         # Із того самого summary, що й текст вище: інакше цифри в повідомленні
         # й у файлі за один день можуть розійтися.
-        document = day_pdf_attachment(summary)
+        built = day_pdf(summary)
+        document = (
+            BufferedInputFile(built[1], filename=day_report_filename(d))
+            if built is not None
+            else None
+        )
 
         for chat_id in await _admin_chat_ids(session):
             attempted += 1
@@ -325,6 +340,11 @@ async def admin_digest(
                 sent += 1
                 if document is not None:
                     await _send_document(bot, chat_id, document)
+
+        # Пошта — після Telegram і байдужа до його результату: у адміністратора
+        # бот міг бути заблокований, а директор усе одно чекає лист.
+        if built is not None:
+            await mailer.safe_send_day_report(*built)
 
         if _should_mark(attempted, sent):
             await mark_run(session, "digest", d)

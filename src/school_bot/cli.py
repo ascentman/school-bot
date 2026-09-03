@@ -28,7 +28,7 @@ from school_bot.domain.classes import create_classes, set_teacher_classes
 from school_bot.domain.meals import active_classes, day_summary, upsert_entry
 from school_bot.domain.phones import format_phone
 from school_bot.domain.teachers import import_teachers
-from school_bot.reports import sheets
+from school_bot.reports import mailer, sheets
 from school_bot.reports.day import build_day_report, day_report_filename
 from school_bot.reports.matrix import available_months, build_month_matrix
 from school_bot.reports.pdf import render_day_pdf, render_pdf
@@ -150,8 +150,9 @@ def report(
 def day_report(
     date: str = typer.Option(None, help="Дата РРРР-ММ-ДД. Без параметра — сьогодні."),
     out: Path = typer.Option(Path("reports_out"), help="Куди зберегти"),
+    email: bool = typer.Option(False, help="Ще й надіслати на REPORT_EMAILS"),
 ) -> None:
-    """Згенерувати PDF-звіт за день у файл."""
+    """Згенерувати PDF-звіт за день у файл (і, за потреби, надіслати поштою)."""
     _setup_logging()
     d = _parse_date(date)      # без параметра — сьогодні
 
@@ -163,13 +164,23 @@ def day_report(
                 session, d, school_name=settings.school_name, slots=settings.meal_slots
             )
 
+        pdf = render_day_pdf(report)
         path = out / day_report_filename(d)
-        path.write_bytes(render_day_pdf(report))
+        path.write_bytes(pdf)
         typer.echo(f"✔ {path}")
         typer.echo(
             f"  {d}: {report.total} порцій, подали {report.submitted} з {report.expected}"
             + (f", не подали — {', '.join(report.missing)}" if report.missing else "")
         )
+
+        if email:
+            if not settings.email_enabled:
+                typer.echo("✖ Пошта не налаштована: заповніть SMTP_* і REPORT_EMAILS у .env")
+                raise typer.Exit(1)
+            # Тут навмисно без safe_-обгортки: команду запустили, щоб перевірити
+            # налаштування, тож помилка SMTP має бути видно, а не в логах.
+            await mailer.send_day_report(report, pdf)
+            typer.echo(f"✔ надіслано на {', '.join(settings.report_emails)}")
 
     asyncio.run(_go())
 

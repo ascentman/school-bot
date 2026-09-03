@@ -225,6 +225,57 @@ async def test_digest_reads_the_day_only_once(bot, maker, school, monkeypatch):
     assert bot.docs_to(2002)                     # і файл усе одно надіслано
 
 
+async def test_digest_emails_the_same_pdf_it_sends_to_telegram(bot, maker, school, monkeypatch):
+    """Один рендер на обидва канали — інакше вони можуть розійтися."""
+    from school_bot.reports import mailer
+
+    posted: list[tuple] = []
+
+    async def fake_send(report, pdf):
+        posted.append((report, pdf))
+        return True
+
+    monkeypatch.setattr(mailer, "safe_send_day_report", fake_send)
+    await jobs.admin_digest(bot, maker, MONDAY)
+
+    assert len(posted) == 1
+    report, pdf = posted[0]
+    assert report.date == MONDAY
+    assert pdf.startswith(b"%PDF")
+
+
+async def test_digest_survives_a_dead_smtp(bot, maker, school, monkeypatch):
+    """Недоступна пошта не має забирати з собою зведення в Telegram.
+
+    Канал увімкнено, але сервер не відповідає — саме той стан, у якому опиниться
+    прод, якщо Gmail відхилить пароль або впаде мережа.
+    """
+    from school_bot.reports import mailer
+
+    def dead(msg):
+        raise OSError("SMTP недоступний")
+
+    monkeypatch.setattr(mailer.settings, "smtp_user", "bot@school.ua")
+    monkeypatch.setattr(mailer.settings, "smtp_password", "p")
+    monkeypatch.setattr(mailer.settings, "report_emails", ["dyrektor@school.ua"])
+    monkeypatch.setattr(mailer, "_send_sync", dead)
+
+    assert await jobs.admin_digest(bot, maker, MONDAY) == 1
+    assert bot.to(2002)[0].text      # текст дійшов
+    assert bot.docs_to(2002)         # і файл у Telegram теж
+
+    async with maker() as s:
+        assert await jobs.has_run(s, "digest", MONDAY)
+
+
+async def test_digest_does_not_email_when_channel_is_off(bot, maker, school):
+    """У тестах SMTP не налаштований — і жодних спроб надсилати немає."""
+    from school_bot.config import settings
+
+    assert not settings.email_enabled
+    assert await jobs.admin_digest(bot, maker, MONDAY) == 1
+
+
 # --- стійкість ------------------------------------------------------------
 
 
