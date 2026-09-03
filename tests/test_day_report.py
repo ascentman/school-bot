@@ -17,7 +17,12 @@ from school_bot.config import BASE_DIR, Settings
 from school_bot.db.models import MealEntry, SchoolClass
 from school_bot.domain.classes import parse_class_name
 from school_bot.domain.slots import parse_meal_slots
-from school_bot.reports.day import UNSCHEDULED_LABEL, build_day_report, day_report_filename
+from school_bot.reports.day import (
+    UNSCHEDULED_LABEL,
+    build_day_report,
+    build_report,
+    day_report_filename,
+)
 from school_bot.reports.pdf import render_day_pdf
 
 DAY = date(2026, 9, 3)
@@ -157,6 +162,31 @@ async def test_missing_class_is_not_counted_as_zero(session, classes):
     assert cells["3-Б"].count is None and not cells["3-Б"].submitted
     assert report.submitted == 1
     assert report.missing == ["3-Б", "5-В"]
+
+
+def test_report_builds_from_a_snapshot_without_touching_the_database():
+    """`build_report` — чиста функція над готовим DaySummary.
+
+    Саме завдяки цьому текст зведення і PDF будуються з одного знімка: той,
+    хто вже має DaySummary, не мусить перечитувати день.
+    """
+    from school_bot.domain.meals import ClassDayStatus, DaySummary
+
+    statuses = [
+        ClassDayStatus(school_class=SchoolClass(name="3-Б", grade=3, letter="Б"), entry=None),
+        ClassDayStatus(
+            school_class=SchoolClass(name="1-А", grade=1, letter="А"),
+            entry=MealEntry(date=DAY, eating_count=17),
+        ),
+    ]
+    report = build_report(
+        DaySummary(date=DAY, statuses=statuses), slots=parse_meal_slots(SCHEDULE)
+    )
+
+    assert report.date == DAY
+    assert report.total == 17
+    assert report.missing == ["3-Б"]
+    assert [g.label for g in report.groups] == ["08:45 – 09:00", "09:45 – 10:00"]
 
 
 # --- PDF -------------------------------------------------------------------

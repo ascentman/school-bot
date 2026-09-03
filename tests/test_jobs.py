@@ -178,6 +178,53 @@ async def test_digest_survives_a_failing_pdf_send(maker, school):
         assert await jobs.has_run(s, "digest", MONDAY)
 
 
+async def test_digest_survives_a_failing_pdf_render(bot, maker, school, monkeypatch):
+    """Збій рендеру коштує файл, а не все зведення.
+
+    До появи PDF текстове зведення від нього не залежало взагалі. Якщо виняток
+    з ReportLab вилетить до розсилки, адміни того дня не отримають нічого —
+    саме цього й не має статися.
+    """
+    def boom(report):
+        raise RuntimeError("ReportLab не зміг")
+
+    monkeypatch.setattr(jobs, "render_day_pdf", boom)
+
+    assert await jobs.admin_digest(bot, maker, MONDAY) == 1
+    assert "Подали:" in bot.to(2002)[0].text     # текст усе одно дійшов
+    assert bot.documents == []                   # а файла просто немає
+
+    async with maker() as s:
+        assert await jobs.has_run(s, "digest", MONDAY)
+
+
+async def test_digest_reads_the_day_only_once(bot, maker, school, monkeypatch):
+    """Текст і вкладення будуються з одного знімка даних.
+
+    Два окремі запити до БД лишали вікно: вчитель встигає надіслати цифру між
+    ними, і повідомлення та файл за той самий день показують різні числа.
+    """
+    from school_bot.reports import day as day_report
+
+    calls: list[object] = []
+    real = jobs.day_summary
+
+    async def counting(session, d):
+        summary = await real(session, d)
+        calls.append(summary)
+        return summary
+
+    # Обидва модулі імпортували day_summary поіменно, тож рахувати треба в
+    # кожному: підміна лише в одному пропустила б звернення з іншого.
+    monkeypatch.setattr(jobs, "day_summary", counting)
+    monkeypatch.setattr(day_report, "day_summary", counting)
+
+    await jobs.admin_digest(bot, maker, MONDAY)
+
+    assert len(calls) == 1, "день має читатися рівно раз на зведення"
+    assert bot.docs_to(2002)                     # і файл усе одно надіслано
+
+
 # --- стійкість ------------------------------------------------------------
 
 

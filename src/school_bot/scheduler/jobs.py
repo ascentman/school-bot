@@ -27,6 +27,7 @@ from school_bot.config import settings
 from school_bot.db.models import AppSetting, Role, SchoolClass, Teacher
 from school_bot.domain.calendar import is_school_day
 from school_bot.domain.meals import (
+    DaySummary,
     active_classes,
     day_summary,
     get_entry,
@@ -34,7 +35,7 @@ from school_bot.domain.meals import (
     primary_teacher_ids,
 )
 from school_bot.reports import sheets
-from school_bot.reports.day import build_day_report, day_report_filename
+from school_bot.reports.day import build_report, day_report_filename
 from school_bot.reports.matrix import available_months, build_month_matrix
 from school_bot.reports.pdf import render_day_pdf
 
@@ -142,6 +143,28 @@ async def _send_document(bot: Bot, chat_id: int, document: BufferedInputFile) ->
     except Exception:
         log.exception("Не вдалося надіслати PDF до %s", chat_id)
         return False
+
+
+def day_pdf_attachment(summary: DaySummary) -> BufferedInputFile | None:
+    """PDF за день як вкладення, або None, якщо його не вдалося побудувати.
+
+    Рендер не має права зірвати зведення: до цієї фічі текстове зведення від
+    PDF не залежало взагалі, і воно ж несе головні цифри. Виняток із ReportLab
+    інакше вилетів би ще до першої розсилки — і того дня адміни не отримали б
+    нічого, замість «текст без файлу».
+    """
+    if not summary.statuses:
+        return None
+    try:
+        report = build_report(
+            summary, school_name=settings.school_name, slots=settings.meal_slots
+        )
+        return BufferedInputFile(
+            render_day_pdf(report), filename=day_report_filename(summary.date)
+        )
+    except Exception:
+        log.exception("Не вдалося побудувати PDF за %s — надішлю саме зведення", summary.date)
+        return None
 
 
 async def _admin_chat_ids(session: AsyncSession) -> list[int]:
@@ -292,14 +315,9 @@ async def admin_digest(
         )
         markup = keyboards.missing_classes(d, missing) if missing else None
 
-        report = await build_day_report(
-            session, d, school_name=settings.school_name, slots=settings.meal_slots
-        )
-        document = (
-            BufferedInputFile(render_day_pdf(report), filename=day_report_filename(d))
-            if report.expected
-            else None
-        )
+        # Із того самого summary, що й текст вище: інакше цифри в повідомленні
+        # й у файлі за один день можуть розійтися.
+        document = day_pdf_attachment(summary)
 
         for chat_id in await _admin_chat_ids(session):
             attempted += 1

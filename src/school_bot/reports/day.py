@@ -14,7 +14,7 @@ from datetime import date as Date
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from school_bot.domain.meals import day_summary
+from school_bot.domain.meals import DaySummary, day_summary
 from school_bot.domain.slots import MealSlot
 
 log = logging.getLogger(__name__)
@@ -90,15 +90,19 @@ class DayReport:
         return [c.name for c in self.cells if not c.submitted]
 
 
-async def build_day_report(
-    session: AsyncSession,
-    d: Date,
+def build_report(
+    summary: DaySummary,
     *,
     school_name: str = "",
     slots: Sequence[MealSlot] = (),
 ) -> DayReport:
-    """Зібрати звіт за день, розклавши класи по змінах роздачі."""
-    summary = await day_summary(session, d)
+    """Розкласти вже зібраний підсумок дня по змінах роздачі.
+
+    Приймає готовий DaySummary, а не сесію, щоб текст зведення і прикріплений
+    до нього PDF будувалися з одного знімка даних. Інакше між двома запитами
+    вчитель встигає надіслати цифру — і два документи за той самий день
+    показують різні числа.
+    """
     by_name = {s.school_class.name: s for s in summary.statuses}
 
     groups: list[SlotGroup] = []
@@ -125,4 +129,16 @@ async def build_day_report(
     if rest:
         groups.append(SlotGroup(label=UNSCHEDULED_LABEL if slots else "", cells=rest))
 
-    return DayReport(date=d, school_name=school_name, groups=groups)
+    return DayReport(date=summary.date, school_name=school_name, groups=groups)
+
+
+async def build_day_report(
+    session: AsyncSession,
+    d: Date,
+    *,
+    school_name: str = "",
+    slots: Sequence[MealSlot] = (),
+) -> DayReport:
+    """Зібрати звіт за день. Для тих, у кого ще немає готового DaySummary."""
+    summary = await day_summary(session, d)
+    return build_report(summary, school_name=school_name, slots=slots)
