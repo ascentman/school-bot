@@ -39,6 +39,8 @@ def test_every_button_the_guide_shows_still_exists(guide: str):
         *_labels(keyboards.edit_button(1, date(2026, 9, 1))),
         *_labels(keyboards.main_menu(is_admin=False)),
         *_labels(keyboards.number_pad(1, date(2026, 9, 1), last_known=24, max_children=40)),
+        *_labels(keyboards.absent_pad(1, date(2026, 9, 1), current=None, max_children=40)),
+        *_labels(keyboards.sick_pad(1, date(2026, 9, 1), current=None, max_absent=3)),
     }
     # Ті, що намальовані в пам'ятці явно.
     drawn = {
@@ -49,6 +51,7 @@ def test_every_button_the_guide_shows_still_exists(guide: str):
         "📋 Мої класи",
         "0 — немає",
         "✏️ Інша цифра",
+        "⏭ Пропустити",
     }
     missing_from_bot = drawn - shown
     assert not missing_from_bot, f"пам'ятка показує неіснуючі кнопки: {missing_from_bot}"

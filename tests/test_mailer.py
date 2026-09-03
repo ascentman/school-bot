@@ -72,6 +72,13 @@ def test_body_answers_the_question_without_opening_the_pdf():
     assert "1-А: 17" in body
 
 
+def test_body_reports_absences_too():
+    body = mailer.body_for(_report())
+    assert "Всього відсутніх:" in body
+    assert "з них по хворобі:" in body
+    assert "відсутні —" in body         # у фікстурі відсутніх не подавали
+
+
 def test_body_shows_a_dash_for_a_class_that_did_not_submit():
     """Пропуск і нуль лишаються різними речами й у листі."""
     assert "3-Б: —" in mailer.body_for(_report())

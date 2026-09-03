@@ -42,6 +42,25 @@ class EntrySource(StrEnum):
     IMPORT = "import"
 
 
+class MealField(StrEnum):
+    """Яку саме цифру запису змінили. Потрібне журналу правок.
+
+    До появи відсутніх/хворих цифра була одна, тож журнал її не називав.
+    Тепер без назви поля неможливо відповісти, що саме виправили.
+    """
+
+    EATING = "eating"
+    ABSENT = "absent"
+    SICK = "sick"
+
+
+UA_MEAL_FIELD = {
+    MealField.EATING: "харчування",
+    MealField.ABSENT: "відсутні",
+    MealField.SICK: "хворі",
+}
+
+
 class DayKind(StrEnum):
     HOLIDAY = "holiday"      # державне свято
     VACATION = "vacation"    # канікули
@@ -134,6 +153,11 @@ class MealEntry(Base):
     date: Mapped[Date] = mapped_column(sa.Date, index=True)
     eating_count: Mapped[int] = mapped_column(Integer)
     present_count: Mapped[int | None] = mapped_column(Integer)
+    # NULL — не питали або вчитель пропустив питання; 0 — відсутніх справді
+    # немає. Зливати ці два стани не можна: до цієї фічі даних не було взагалі,
+    # і звіт за травень не має стверджувати, що тоді ніхто не хворів.
+    absent_count: Mapped[int | None] = mapped_column(Integer)
+    sick_count: Mapped[int | None] = mapped_column(Integer)
     entered_by_teacher_id: Mapped[int | None] = mapped_column(
         ForeignKey("teacher.id", ondelete="SET NULL")
     )
@@ -158,6 +182,17 @@ class MealEntryAudit(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     entry_id: Mapped[int] = mapped_column(
         ForeignKey("meal_entry.id", ondelete="CASCADE"), index=True
+    )
+    # Назва саме changed_field, а не field: у domain/meals.py уже імпортовано
+    # dataclasses.field, і поруч там будуються ці ж рядки журналу.
+    #
+    # server_default — рядок "EATING", а не "eating": sa.Enum(native_enum=False)
+    # зберігає ІМʼЯ члена enum, а не значення (у проді source лежить як
+    # "TEACHER"). З малими літерами наявні рядки не читалися б назад.
+    changed_field: Mapped[MealField] = mapped_column(
+        sa.Enum(MealField, native_enum=False),
+        default=MealField.EATING,
+        server_default=MealField.EATING.name,
     )
     old_value: Mapped[int | None] = mapped_column(Integer)
     new_value: Mapped[int] = mapped_column(Integer)

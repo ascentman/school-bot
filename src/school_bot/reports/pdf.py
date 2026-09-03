@@ -10,7 +10,14 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import (
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 from school_bot.domain.dates import format_date, plural_children
 from school_bot.reports.day import DayReport
@@ -85,24 +92,14 @@ def _bold_font() -> str:
     return _bold_name
 
 
-def render_pdf(matrix: MonthMatrix) -> bytes:
-    font = _cyrillic_font()
-    buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=landscape(A4),
-        leftMargin=8 * mm,
-        rightMargin=8 * mm,
-        topMargin=10 * mm,
-        bottomMargin=10 * mm,
-        title=f"Облік харчування — {matrix.title}",
-    )
+def _month_story(matrix: MonthMatrix, doc: SimpleDocTemplate, font: str) -> list:
+    """Одна сторінка місячного табеля."""
 
     title_style = ParagraphStyle("t", fontName=font, fontSize=13, alignment=1, spaceAfter=2)
     sub_style = ParagraphStyle("s", fontName=font, fontSize=9, alignment=1, spaceAfter=6)
     foot_style = ParagraphStyle("f", fontName=font, fontSize=9, spaceBefore=10)
 
-    story = [Paragraph(f"Облік харчування учнів — {matrix.title}", title_style)]
+    story = [Paragraph(matrix.heading, title_style)]
     if matrix.school_name:
         story.append(Paragraph(matrix.school_name, sub_style))
     story.append(Spacer(1, 2 * mm))
@@ -162,6 +159,34 @@ def render_pdf(matrix: MonthMatrix) -> bytes:
                   "Дата: ______________", foot_style)
     )
 
+    return story
+
+
+def render_pdf(*matrices: MonthMatrix) -> bytes:
+    """Місячний табель: по сторінці на метрику.
+
+    Саме сторінки, а не додаткові колонки: у ландшафтній таблиці на 31 день
+    колонка вже ~8 мм і вміщає дві цифри, тож третьої вкласти нікуди.
+    """
+    font = _cyrillic_font()
+    buf = BytesIO()
+    first = matrices[0]
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=landscape(A4),
+        leftMargin=8 * mm,
+        rightMargin=8 * mm,
+        topMargin=10 * mm,
+        bottomMargin=10 * mm,
+        title=f"Облік харчування — {first.title}",
+    )
+
+    story: list = []
+    for i, matrix in enumerate(matrices):
+        if i:
+            story.append(PageBreak())
+        story += _month_story(matrix, doc, font)
+
     doc.build(story)
     return buf.getvalue()
 
@@ -204,7 +229,10 @@ def render_day_pdf(report: DayReport) -> bytes:
         Paragraph(f"Разом на харчуванні: <b>{plural_children(report.total)}</b>", total_style)
     )
 
-    data: list[list[str]] = [["Клас", "Дітей"]]
+    def cell(v: int | None) -> str:
+        return "—" if v is None else str(v)
+
+    data: list[list[str]] = [["Клас", "Дітей", "Відсутні", "З них хворі"]]
     # Рядки-заголовки змін фарбуються окремо від рядків класів, тому їхні
     # номери запамʼятовуємо просто під час збирання таблиці.
     group_rows: list[int] = []
@@ -212,18 +240,30 @@ def render_day_pdf(report: DayReport) -> bytes:
         if group.label:
             group_rows.append(len(data))
             # Зміна без жодної поданої цифри — це не нуль порцій, а брак даних.
-            data.append([group.label, str(group.total) if group.has_data else "—"])
-        for cell in group.cells:
-            data.append([cell.name, "—" if cell.count is None else str(cell.count)])
-    data.append(["РАЗОМ", str(report.total)])
+            data.append([
+                group.label,
+                str(group.total) if group.has_data else "—",
+                cell(group.absent_total),
+                cell(group.sick_total),
+            ])
+        for c in group.cells:
+            data.append([c.name, cell(c.count), cell(c.absent), cell(c.sick)])
+    data.append([
+        "РАЗОМ",
+        str(report.total),
+        cell(report.absent_total),
+        cell(report.sick_total),
+    ])
 
-    table = Table(data, colWidths=[62 * mm, 28 * mm], repeatRows=1, hAlign="CENTER")
+    table = Table(
+        data, colWidths=[62 * mm, 28 * mm, 28 * mm, 28 * mm], repeatRows=1, hAlign="CENTER"
+    )
     style = [
         ("FONTNAME", (0, 0), (-1, -1), font),
         ("FONTNAME", (0, 0), (-1, 0), bold),
         ("FONTNAME", (0, -1), (-1, -1), bold),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("ALIGN", (1, 0), (1, -1), "CENTER"),
+        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#B0B0B0")),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DDE5F0")),

@@ -30,7 +30,11 @@ from school_bot.domain.phones import format_phone
 from school_bot.domain.teachers import import_teachers
 from school_bot.reports import mailer, sheets
 from school_bot.reports.day import build_day_report, day_report_filename
-from school_bot.reports.matrix import available_months, build_month_matrix
+from school_bot.reports.matrix import (
+    available_months,
+    build_month_matrices,
+    build_month_matrix,
+)
 from school_bot.reports.pdf import render_day_pdf, render_pdf
 from school_bot.reports.xlsx import render_xlsx
 from school_bot.scheduler import jobs
@@ -120,22 +124,23 @@ def report(
         await ensure_schema()
         out.mkdir(parents=True, exist_ok=True)
         async with SessionMaker() as session:
-            matrix = await build_month_matrix(
+            matrices = await build_month_matrices(
                 session,
                 year,
                 mon,
                 school_name=settings.school_name,
                 today=today(),
             )
+            matrix = matrices[0]
 
         stem = f"harchuvannia_{year}-{mon:02d}"
         if fmt in ("xlsx", "both"):
             path = out / f"{stem}.xlsx"
-            path.write_bytes(render_xlsx(matrix))
+            path.write_bytes(render_xlsx(*matrices))
             typer.echo(f"✔ {path}")
         if fmt in ("pdf", "both"):
             path = out / f"{stem}.pdf"
-            path.write_bytes(render_pdf(matrix))
+            path.write_bytes(render_pdf(*matrices))
             typer.echo(f"✔ {path}")
         typer.echo(
             f"  {matrix.title}: {matrix.grand_total} порцій, "

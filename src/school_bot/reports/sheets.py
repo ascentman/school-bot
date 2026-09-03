@@ -13,8 +13,9 @@ import logging
 from typing import Any
 
 from school_bot.config import settings
+from school_bot.db.models import MealField
 from school_bot.domain.dates import month_name
-from school_bot.reports.matrix import MonthMatrix
+from school_bot.reports.matrix import UA_METRIC, MonthMatrix
 
 log = logging.getLogger(__name__)
 
@@ -31,8 +32,11 @@ class SheetsDisabledError(RuntimeError):
     pass
 
 
-def tab_name(year: int, month: int) -> str:
-    return f"{year}-{month:02d}"
+def tab_name(year: int, month: int, metric: MealField = MealField.EATING) -> str:
+    """Назва вкладки. Харчування лишається «2026-09», решта — з суфіксом."""
+    base = f"{year}-{month:02d}"
+    suffix = UA_METRIC[metric]
+    return f"{base} {suffix}" if suffix else base
 
 
 def _client() -> Any:
@@ -58,7 +62,7 @@ def matrix_to_grid(matrix: MonthMatrix) -> list[list[Any]]:
     header_wd = [""] + [(c.off_marker or c.weekday_short) for c in matrix.columns] + [""]
 
     grid: list[list[Any]] = [
-        [f"Облік харчування учнів — {matrix.title}"],
+        [matrix.heading],
         [matrix.school_name or ""],
         [],
         header_days,
@@ -136,7 +140,7 @@ def format_requests(matrix: MonthMatrix, sheet_id: int) -> list[dict[str, Any]]:
 def _rebuild_month_sync(matrix: MonthMatrix) -> str:
     gc = _client()
     book = gc.open_by_key(settings.google_sheet_id)
-    name = tab_name(matrix.year, matrix.month)
+    name = tab_name(matrix.year, matrix.month, matrix.metric)
 
     grid = matrix_to_grid(matrix)
     n_cols = len(matrix.columns) + 2

@@ -36,7 +36,7 @@ from school_bot.domain.meals import (
 )
 from school_bot.reports import mailer, sheets
 from school_bot.reports.day import DayReport, build_report, day_report_filename
-from school_bot.reports.matrix import available_months, build_month_matrix
+from school_bot.reports.matrix import available_months, build_month_matrices
 from school_bot.reports.pdf import render_day_pdf
 
 log = logging.getLogger(__name__)
@@ -46,6 +46,9 @@ DailyJob = Callable[..., Awaitable[int]]
 
 # Пауза між повідомленнями: ~20 за секунду — у межах ліміту Telegram.
 SEND_PAUSE = 0.05
+
+# Пауза між вкладками Google Sheets: квота ~60 записів на хвилину.
+SHEETS_PAUSE = 1.2
 
 
 # --- журнал запусків -------------------------------------------------------
@@ -362,23 +365,40 @@ async def sync_all_months(session: AsyncSession, limit: int = 12) -> tuple[int, 
     """
     months = await available_months(session, limit=limit)
     moment = today()
-    matrices = [
-        await build_month_matrix(session, y, m, school_name=settings.school_name, today=moment)
-        for y, m in months
-    ]
+    eating: list = []
+    tabs: list = []
+    for y, m in months:
+        eat, absent, sick = await build_month_matrices(
+            session, y, m, school_name=settings.school_name, today=moment
+        )
+        eating.append(eat)
+        tabs.append(eat)
+        # Вкладки відсутніх і хворих створюємо лише за місяці, де ці цифри
+        # справді є. Уся історія до появи фічі їх не має, тож інакше ми
+        # щоночі перебудовували б два десятки порожніх вкладок — і без потреби
+        # впиралися б у квоту Google на записи.
+        tabs.extend(extra for extra in (absent, sick) if extra.has_any_data)
 
     synced = 0
-    for matrix in matrices:
+    for i, matrix in enumerate(tabs):
+        if i:
+            # Вкладок тепер утричі більше (три метрики на місяць), а Sheets
+            # дозволяє ~60 записів на хвилину. Без паузи нічний синк упирався б
+            # у 429, і safe_rebuild_month тихо проковтнув би це — вкладки
+            # лишилися б застарілими, і ніхто б не помітив.
+            await asyncio.sleep(SHEETS_PAUSE)
         if await sheets.safe_rebuild_month(matrix):
             synced += 1
 
-    if matrices:
+    # «Зведення» лишається про харчування: це відповідь на питання
+    # «скільки годували», а не «скільки хворіли».
+    if eating:
         try:
-            await sheets.sync_summary(matrices)
+            await sheets.sync_summary(eating)
         except Exception:
             log.exception("Не вдалося оновити вкладку «Зведення»")
 
-    return synced, len(matrices)
+    return synced, len(tabs)
 
 
 async def nightly_sheets_sync(maker: async_sessionmaker[AsyncSession]) -> int:

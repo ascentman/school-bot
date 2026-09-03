@@ -114,3 +114,29 @@ async def test_totals_row_never_contradicts_the_rows_above(session, classes, tea
     ws = load_workbook(BytesIO(render_xlsx(matrix))).active
     assert ws.cell(6, 1 + 5).value == 20        # рядок класу
     assert ws.cell(9, 1 + 5).value == 20        # підсумковий рядок
+
+
+async def test_workbook_has_a_sheet_per_metric(session, classes):
+    """Аркуш харчування лишається першим і зберігає стару назву."""
+    from openpyxl import load_workbook
+
+    from school_bot.reports.matrix import build_month_matrices
+    from school_bot.reports.xlsx import render_xlsx
+
+    ms = await build_month_matrices(session, 2026, 9, school_name="Ліцей №1")
+    wb = load_workbook(BytesIO(render_xlsx(*ms)))
+
+    assert [w.title for w in wb.worksheets] == [
+        "2026-09", "2026-09 відсутні", "2026-09 хворі"
+    ]
+    assert wb.active.title == "2026-09"
+
+
+async def test_monthly_pdf_has_a_page_per_metric(session, classes):
+    from school_bot.reports.matrix import build_month_matrices
+    from school_bot.reports.pdf import render_pdf
+
+    ms = await build_month_matrices(session, 2026, 9, school_name="Ліцей №1")
+    data = render_pdf(*ms)
+    assert data.startswith(b"%PDF-")
+    assert data.count(b"/Type /Page") - data.count(b"/Type /Pages") == 3

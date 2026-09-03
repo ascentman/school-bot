@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date as Date
 
@@ -24,6 +24,16 @@ log = logging.getLogger(__name__)
 UNSCHEDULED_LABEL = "Поза розкладом"
 
 
+def _optional_sum(values: Iterable[int | None]) -> int | None:
+    """Сума наявних цифр, або None, якщо не подано жодної.
+
+    Те саме правило, що й у day_total місячного табеля: порожньо — це не
+    нуль. Інакше колонка «відсутні» за старі дні показувала б рівні нулі.
+    """
+    present = [v for v in values if v is not None]
+    return sum(present) if present else None
+
+
 def day_report_filename(d: Date) -> str:
     """Ім'я файлу звіту за день.
 
@@ -35,12 +45,19 @@ def day_report_filename(d: Date) -> str:
 
 @dataclass(slots=True)
 class ClassCell:
+    """Клас у звіті за день.
+
+    `submitted` — це НАЯВНІСТЬ ЗАПИСУ, а не наявність цифри. Донедавна ці дві
+    речі збігалися, бо цифра була одна й обовʼязкова. Тепер клас може подати
+    харчування й пропустити відсутніх, тож виводити «подав» зі значення
+    означало б рахувати його в боржники.
+    """
+
     name: str
     count: int | None
-
-    @property
-    def submitted(self) -> bool:
-        return self.count is not None
+    absent: int | None = None
+    sick: int | None = None
+    submitted: bool = True
 
 
 @dataclass(slots=True)
@@ -61,6 +78,14 @@ class SlotGroup:
     @property
     def has_data(self) -> bool:
         return any(c.submitted for c in self.cells)
+
+    @property
+    def absent_total(self) -> int | None:
+        return _optional_sum(c.absent for c in self.cells)
+
+    @property
+    def sick_total(self) -> int | None:
+        return _optional_sum(c.sick for c in self.cells)
 
 
 @dataclass(slots=True)
@@ -84,6 +109,14 @@ class DayReport:
     @property
     def submitted(self) -> int:
         return sum(1 for c in self.cells if c.submitted)
+
+    @property
+    def absent_total(self) -> int | None:
+        return _optional_sum(c.absent for c in self.cells)
+
+    @property
+    def sick_total(self) -> int | None:
+        return _optional_sum(c.sick for c in self.cells)
 
     @property
     def missing(self) -> list[str]:
@@ -116,13 +149,27 @@ def build_report(
                 # Клас є в розкладі, але вимкнений або не заведений у школі.
                 log.warning("MEAL_SLOTS: класу %s немає серед активних", name)
                 continue
-            cells.append(ClassCell(name=name, count=status.count))
+            cells.append(
+                ClassCell(
+                    name=name,
+                    count=status.count,
+                    absent=status.absent,
+                    sick=status.sick,
+                    submitted=status.submitted,
+                )
+            )
             placed.add(name)
         if cells:
             groups.append(SlotGroup(label=slot.label, cells=cells))
 
     rest = [
-        ClassCell(name=s.school_class.name, count=s.count)
+        ClassCell(
+            name=s.school_class.name,
+            count=s.count,
+            absent=s.absent,
+            sick=s.sick,
+            submitted=s.submitted,
+        )
         for s in summary.statuses
         if s.school_class.name not in placed
     ]

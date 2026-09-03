@@ -35,10 +35,15 @@ def body_for(report: DayReport) -> str:
     Щоб відповісти «скільки сьогодні?», не має бути потреби відкривати вкладення
     з телефона: сам PDF потрібен уже тоді, коли його треба роздрукувати.
     """
+    def num(v: int | None) -> str:
+        return "—" if v is None else str(v)
+
     lines = [
         f"{format_date(report.date, with_weekday=True)} {report.date.year} р.",
         "",
         f"Разом на харчуванні: {plural_children(report.total)}",
+        f"Всього відсутніх: {num(report.absent_total)}"
+        f" · з них по хворобі: {num(report.sick_total)}",
         f"Подали дані: {report.submitted} з {report.expected} класів",
     ]
     if report.missing:
@@ -50,8 +55,12 @@ def body_for(report: DayReport) -> str:
             total = group.total if group.has_data else "—"
             lines.append(f"{group.label}   {total}")
         for cell in group.cells:
-            value = "—" if cell.count is None else cell.count
-            lines.append(f"    {cell.name}: {value}")
+            # Дописуємо до наявного рядка, а не перебудовуємо його: «1-А: 17»
+            # лишається на місці, тож і звичка читача, і тести не ламаються.
+            lines.append(
+                f"    {cell.name}: {num(cell.count)}"
+                f" · відсутні {num(cell.absent)} · хворі {num(cell.sick)}"
+            )
 
     lines += ["", "—", "Надіслано ботом обліку харчування автоматично."]
     return "\n".join(lines)

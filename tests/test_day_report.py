@@ -227,3 +227,47 @@ def test_example_schedule_only_mentions_example_classes():
     scheduled = {name for slot in s.meal_slots for name in slot.class_names}
     known = {parse_class_name(n)[0] for n in s.school_classes}
     assert scheduled <= known, f"немає серед SCHOOL_CLASSES: {sorted(scheduled - known)}"
+
+
+@pytest.mark.asyncio
+async def test_day_report_carries_absent_and_sick(session, classes):
+    from school_bot.domain.meals import upsert_entry
+
+    await upsert_entry(
+        session, class_id=classes[0].id, d=DAY, eating_count=17,
+        absent_count=3, sick_count=1, teacher_id=None,
+    )
+    report = await build_day_report(session, DAY)
+
+    cell = next(c for c in report.cells if c.name == "1-А")
+    assert (cell.count, cell.absent, cell.sick) == (17, 3, 1)
+    assert (report.absent_total, report.sick_total) == (3, 1)
+
+
+@pytest.mark.asyncio
+async def test_skipping_the_second_question_does_not_make_a_class_missing(session, classes):
+    """Клас подав харчування й пропустив відсутніх — він НЕ боржник."""
+    from school_bot.domain.meals import upsert_entry
+
+    await upsert_entry(
+        session, class_id=classes[0].id, d=DAY, eating_count=17, teacher_id=None
+    )
+    report = await build_day_report(session, DAY)
+
+    cell = next(c for c in report.cells if c.name == "1-А")
+    assert cell.submitted is True
+    assert cell.absent is None
+    assert "1-А" not in report.missing
+
+
+@pytest.mark.asyncio
+async def test_totals_stay_empty_when_nobody_reported_absences(session, classes):
+    """Порожньо — не нуль: старі дні не мають тверджувати, що ніхто не хворів."""
+    from school_bot.domain.meals import upsert_entry
+
+    await upsert_entry(
+        session, class_id=classes[0].id, d=DAY, eating_count=17, teacher_id=None
+    )
+    report = await build_day_report(session, DAY)
+    assert report.absent_total is None
+    assert report.sick_total is None

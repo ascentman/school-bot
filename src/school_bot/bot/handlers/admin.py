@@ -33,7 +33,7 @@ from school_bot.domain.dates import format_date
 from school_bot.domain.meals import active_classes, classes_for_teacher, day_summary
 from school_bot.domain.phones import format_phone
 from school_bot.domain.teachers import clean_name, free_number, import_teachers
-from school_bot.reports.matrix import available_months, build_month_matrix
+from school_bot.reports.matrix import available_months, build_month_matrices
 from school_bot.reports.pdf import render_pdf
 from school_bot.reports.xlsx import render_xlsx
 from school_bot.scheduler.jobs import day_pdf_attachment, sync_all_months
@@ -121,23 +121,24 @@ async def send_report(
     query: CallbackQuery, callback_data: MonthPick, session: AsyncSession
 ) -> None:
     await query.answer(texts.REPORT_BUILDING)
-    matrix = await build_month_matrix(
+    matrices = await build_month_matrices(
         session,
         callback_data.year,
         callback_data.month,
         school_name=settings.school_name,
         today=today(),
     )
+    matrix = matrices[0]      # харчування — для підпису й підсумків
     stem = f"harchuvannia_{callback_data.year}-{callback_data.month:02d}"
     caption = texts.report_caption(
         matrix.title, matrix.grand_total, len(matrix.elapsed_school_days), matrix.missing_total
     )
 
     await query.message.answer_document(
-        BufferedInputFile(render_xlsx(matrix), filename=f"{stem}.xlsx"), caption=caption
+        BufferedInputFile(render_xlsx(*matrices), filename=f"{stem}.xlsx"), caption=caption
     )
     await query.message.answer_document(
-        BufferedInputFile(render_pdf(matrix), filename=f"{stem}.pdf")
+        BufferedInputFile(render_pdf(*matrices), filename=f"{stem}.pdf")
     )
 
 

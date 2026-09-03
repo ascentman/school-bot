@@ -133,10 +133,42 @@ def prompt(class_name: str, d: Date) -> str:
     )
 
 
-def prompt_answered(class_name: str, d: Date, count: int, at: str, *, edited: bool = False) -> str:
+def prompt_absent(class_name: str, d: Date, eating: int) -> str:
+    return (
+        f"✅ <b>{esc(class_name)}</b> · {format_date(d)} — "
+        f"харчуються: <b>{eating}</b>\n\n"
+        "Всього відсутніх?"
+    )
+
+
+def prompt_sick(class_name: str, d: Date, absent: int) -> str:
+    return (
+        f"✅ <b>{esc(class_name)}</b> · {format_date(d)} — "
+        f"відсутні: <b>{absent}</b>\n\n"
+        "З них по хворобі?"
+    )
+
+
+def prompt_answered(
+    class_name: str,
+    d: Date,
+    count: int,
+    at: str,
+    *,
+    edited: bool = False,
+    absent: int | None = None,
+    sick: int | None = None,
+) -> str:
+    """Підсумок дня. Пропущену цифру показуємо як «—», а не як 0."""
     head = "✏️ Виправлено" if edited else "✅ Записано"
+    # esc() на цифрах виглядає зайвим — вони завжди int. Але цей модуль
+    # рендериться в parse_mode=HTML, і правило «екрануємо все, що підставляємо»
+    # має триматися без винятків: інакше наступне поле, яке стане рядком,
+    # проскочить непоміченим.
+    shown = [esc(str(v)) if v is not None else "—" for v in (absent, sick)]
     return (
         f"✅ <b>{esc(class_name)}</b> · {format_date(d)} — <b>{plural_children(count)}</b>\n"
+        f"Відсутні: <b>{shown[0]}</b> · з них хворі: <b>{shown[1]}</b>\n"
         f"<i>{head} о {esc(at)}.</i>"
     )
 
@@ -152,7 +184,10 @@ TEACHER_HELP = (
     "ℹ️ <b>Як це працює</b>\n\n"
     "Щобудня вранці я надсилаю запит по кожному вашому класу. Треба лише "
     "натиснути потрібну цифру — писати нічого не потрібно.\n\n"
+    "Питань три: скільки харчуються, скільки всього відсутніх і скільки з них "
+    "по хворобі. Про хворих питаю, лише якщо відсутні є.\n\n"
     "• Цифра над сіткою — скільки було минулого разу.\n"
+    "• «⏭ Пропустити» — якщо не знаєте; цифра харчування вже збережена.\n"
     "• «✏️ Інша цифра» — якщо потрібного числа немає на екрані.\n"
     "• «✏️ Виправити» — змінити вже подану цифру за сьогодні.\n\n"
     "Якщо ви видалили повідомлення або хочете подати дані раніше — "
@@ -179,6 +214,8 @@ UNKNOWN_INPUT = (
 )
 
 MANUAL_ASK = "Надішліть кількість дітей числом (наприклад: <code>27</code>)."
+MANUAL_ASK_ABSENT = "Надішліть кількість відсутніх числом (наприклад: <code>23</code>)."
+MANUAL_ASK_SICK = "Надішліть кількість хворих числом (наприклад: <code>12</code>)."
 MANUAL_CANCELLED = "Скасовано."
 
 
@@ -187,6 +224,8 @@ def manual_invalid(max_children: int) -> str:
 
 
 TOAST_SAVED = "Записано ✅"
+TOAST_SKIPPED = "Пропущено ⏭"
+SICK_EXCEEDS_ABSENT = "❗ Хворих не може бути більше, ніж відсутніх."
 TOAST_STORED = "Збережено ✅"
 NOTHING_TO_EDIT = "Запис не знайдено — можливо, його вже видалили."
 DAY_IS_OFF = "Цей день позначено як неробочий, тому запит не надсилався."

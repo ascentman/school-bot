@@ -228,3 +228,31 @@ async def test_format_requests_paint_weekends_and_vacations(session, classes, te
     vacations = painted_columns(yellow)
     assert {14, 15} <= vacations
     assert not (weekends & vacations), "день не може бути водночас сірим і жовтим"
+
+
+def test_tab_name_suffixes_only_the_extra_metrics():
+    """Вкладка харчування має лишитися «2026-09» — її вже бачила перевірка."""
+    from school_bot.db.models import MealField
+    from school_bot.reports.sheets import tab_name
+
+    assert tab_name(2026, 9) == "2026-09"
+    assert tab_name(2026, 9, MealField.EATING) == "2026-09"
+    assert tab_name(2026, 9, MealField.ABSENT) == "2026-09 відсутні"
+    assert tab_name(2026, 9, MealField.SICK) == "2026-09 хворі"
+
+
+async def test_absent_grid_carries_the_absent_numbers(session, classes):
+    from school_bot.db.models import MealField
+    from school_bot.domain.meals import upsert_entry
+    from school_bot.reports.matrix import build_month_matrix
+    from school_bot.reports.sheets import matrix_to_grid
+
+    await upsert_entry(
+        session, class_id=classes[0].id, d=date(2026, 9, 1), eating_count=24,
+        absent_count=3, teacher_id=None,
+    )
+    m = await build_month_matrix(session, 2026, 9, metric=MealField.ABSENT)
+    grid = matrix_to_grid(m)
+
+    assert "відсутні" in grid[0][0]
+    assert grid[FIRST_DATA_ROW][1] == 3
