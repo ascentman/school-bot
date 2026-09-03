@@ -8,7 +8,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from school_bot.reports.matrix import MonthMatrix
+from school_bot.reports.matrix import UA_METRIC, MonthMatrix
 
 HEADER_FILL = PatternFill("solid", fgColor="DDE5F0")
 WEEKEND_FILL = PatternFill("solid", fgColor="EFEFEF")
@@ -22,17 +22,25 @@ BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 FIRST_DATA_COL = 2
 
 
-def build_workbook(matrix: MonthMatrix) -> Workbook:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = f"{matrix.year}-{matrix.month:02d}"
+def sheet_title(matrix: MonthMatrix) -> str:
+    """Назва аркуша: «2026-09», «2026-09 відсутні», «2026-09 хворі».
+
+    Суфікс, а не окрема схема іменування: базова назва лишається сортованою
+    й такою самою, як була, тож аркуш харчування нікуди не «переїжджає».
+    """
+    base = f"{matrix.year}-{matrix.month:02d}"
+    suffix = UA_METRIC[matrix.metric]
+    return f"{base} {suffix}" if suffix else base
+
+
+def _fill_sheet(ws, matrix: MonthMatrix) -> None:
 
     total_col = FIRST_DATA_COL + len(matrix.columns)
     last_col_letter = get_column_letter(total_col)
 
     # --- шапка ---
     ws.merge_cells(f"A1:{last_col_letter}1")
-    ws["A1"] = f"Облік харчування учнів — {matrix.title}"
+    ws["A1"] = matrix.heading
     ws["A1"].font = Font(bold=True, size=14)
     ws["A1"].alignment = Alignment(horizontal="center")
 
@@ -130,10 +138,18 @@ def build_workbook(matrix: MonthMatrix) -> Workbook:
     ws.page_setup.fitToWidth = 1
     ws.sheet_properties.pageSetUpPr.fitToPage = True
 
+
+def build_workbook(*matrices: MonthMatrix) -> Workbook:
+    """Книга з аркушем на метрику. Перший аркуш — харчування, як і раніше."""
+    wb = Workbook()
+    for i, matrix in enumerate(matrices):
+        ws = wb.active if i == 0 else wb.create_sheet()
+        ws.title = sheet_title(matrix)
+        _fill_sheet(ws, matrix)
     return wb
 
 
-def render_xlsx(matrix: MonthMatrix) -> bytes:
+def render_xlsx(*matrices: MonthMatrix) -> bytes:
     buf = BytesIO()
-    build_workbook(matrix).save(buf)
+    build_workbook(*matrices).save(buf)
     return buf.getvalue()

@@ -68,3 +68,26 @@ class PickDone(CallbackData, prefix="pd"):
     """«Готово» або «Додати ще» у виборі класів."""
 
     more: bool
+
+
+# Кроки 2 і 3 отримали ВЛАСНІ префікси, а не нове поле в MealSet. Причина
+# практична: бот працює в проді, і в чатах вчителів висять старі повідомлення
+# з кнопками формату "ms:...". aiogram вимагає точного збігу кількості полів
+# при розпакуванні, тож будь-яке нове поле в MealSet — навіть зі значенням за
+# замовчуванням — зробило б кожну ту кнопку мертвою.
+
+
+class MealAbsent(CallbackData, _HasDate, prefix="mab"):
+    """Крок 2: «Всього відсутніх». value=None — «Пропустити»."""
+
+    class_id: int
+    d: int
+    value: int | None
+
+
+class MealSick(CallbackData, _HasDate, prefix="msk"):
+    """Крок 3: «З них по хворобі». value=None — «Пропустити»."""
+
+    class_id: int
+    d: int
+    value: int | None

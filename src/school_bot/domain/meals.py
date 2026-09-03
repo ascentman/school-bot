@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date as Date
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -14,6 +14,7 @@ from school_bot.db.models import (
     EntrySource,
     MealEntry,
     MealEntryAudit,
+    MealField,
     SchoolClass,
 )
 from school_bot.domain.calendar import previous_school_day
@@ -31,6 +32,16 @@ class ClassDayStatus:
     @property
     def count(self) -> int | None:
         return self.entry.eating_count if self.entry else None
+
+    # Відсутні й хворі можуть бути None навіть за наявного запису — вчитель
+    # пропустив питання. Це не те саме, що «клас не подав нічого».
+    @property
+    def absent(self) -> int | None:
+        return self.entry.absent_count if self.entry else None
+
+    @property
+    def sick(self) -> int | None:
+        return self.entry.sick_count if self.entry else None
 
 
 @dataclass(slots=True)
@@ -71,25 +82,79 @@ async def get_entry(session: AsyncSession, class_id: int, d: Date) -> MealEntry 
     )
 
 
+# Поля, за якими ведеться журнал правок. Порядок визначає порядок рядків
+# у журналі, коли за один виклик змінилося кілька цифр.
+_AUDITED: tuple[tuple[str, MealField], ...] = (
+    ("eating_count", MealField.EATING),
+    ("absent_count", MealField.ABSENT),
+    ("sick_count", MealField.SICK),
+)
+
+
+def _audit_change(
+    entry: MealEntry,
+    attr: str,
+    changed_field: MealField,
+    new: int | None,
+    *,
+    teacher_id: int | None,
+    reason: str | None,
+) -> MealEntryAudit | None:
+    """Застосувати одну цифру. None у `new` означає «не чіпати», а не «стерти».
+
+    Саме тому пропуск питання нічого не записує: цифра, подана раніше,
+    переживає і повторний прохід ланцюжком, і правку сусіднього поля.
+    """
+    if new is None:
+        return None
+    old = getattr(entry, attr)
+    if old == new:
+        return None            # повторний тап по тій самій цифрі — не правка
+    setattr(entry, attr, new)
+    return MealEntryAudit(
+        entry_id=entry.id,
+        changed_field=changed_field,
+        old_value=old,
+        new_value=new,
+        changed_by_teacher_id=teacher_id,
+        reason=reason,
+    )
+
+
 async def upsert_entry(
     session: AsyncSession,
     *,
     class_id: int,
     d: Date,
-    eating_count: int,
+    eating_count: int | None = None,
+    absent_count: int | None = None,
+    sick_count: int | None = None,
     teacher_id: int | None,
     source: EntrySource = EntrySource.TEACHER,
     reason: str | None = None,
 ) -> tuple[MealEntry, bool]:
-    """Записати або оновити цифру. Повертає (запис, чи_це_була_правка).
+    """Записати або оновити цифри дня. Повертає (запис, чи_запис_уже_існував).
 
-    Кожна правка існуючого значення потрапляє в meal_entry_audit — без цього
-    неможливо пояснити перевірці, чому цифра за минулий тиждень змінилася.
+    Кожне поле необовʼязкове: None — «не чіпати», а не «стерти». Кожна фактична
+    зміна потрапляє в meal_entry_audit окремим рядком із назвою поля — без цього
+    неможливо пояснити перевірці, яку саме цифру за минулий тиждень виправили.
     """
+    values: dict[str, int | None] = {
+        "eating_count": eating_count,
+        "absent_count": absent_count,
+        "sick_count": sick_count,
+    }
+
     entry = await get_entry(session, class_id, d)
     is_update = entry is not None
+    audits: list[MealEntryAudit] = []
 
     if entry is None:
+        if eating_count is None:
+            # Запис без харчування створити не можна: колонка NOT NULL, і сам
+            # звіт будується навколо неї. Краще зрозуміла помилка, ніж
+            # IntegrityError із глибини SQLAlchemy.
+            raise ValueError("Новий запис потребує eating_count")
         entry = MealEntry(
             class_id=class_id,
             date=d,
@@ -98,34 +163,56 @@ async def upsert_entry(
             source=source,
         )
         session.add(entry)
-        await session.flush()
-        session.add(
+        await session.flush()          # потрібен entry.id для журналу
+        audits.append(
             MealEntryAudit(
                 entry_id=entry.id,
+                changed_field=MealField.EATING,
                 old_value=None,
                 new_value=eating_count,
                 changed_by_teacher_id=teacher_id,
                 reason=reason,
             )
         )
-    elif entry.eating_count != eating_count:
-        old = entry.eating_count
-        entry.eating_count = eating_count
+        # Харчування вже застосоване й зажурнальоване вище; лишилися дві цифри,
+        # які адмін чи імпорт можуть передати тим самим викликом.
+        pending = _AUDITED[1:]
+    else:
+        pending = _AUDITED
+
+    for attr, meal_field in pending:
+        row = _audit_change(
+            entry, attr, meal_field, values[attr], teacher_id=teacher_id, reason=reason
+        )
+        if row is not None:
+            audits.append(row)
+
+    if audits:
+        # Автора й джерело оновлюємо лише разом зі справжньою зміною: повторний
+        # тап по тій самій цифрі не має переписувати, хто ввів запис.
         entry.entered_by_teacher_id = teacher_id
         entry.source = source
-        await session.flush()
-        session.add(
-            MealEntryAudit(
-                entry_id=entry.id,
-                old_value=old,
-                new_value=eating_count,
-                changed_by_teacher_id=teacher_id,
-                reason=reason,
-            )
-        )
+        session.add_all(audits)
 
     await session.flush()
     return entry, is_update
+
+
+async def was_corrected(session: AsyncSession, entry_id: int) -> bool:
+    """Чи цифру харчування вже правили після першого запису.
+
+    Потрібне ланцюжку: на другому й третьому кроці запис уже існує, тож
+    «запис існував» більше не означає «це правка». Джерело правди — журнал.
+    """
+    n = await session.scalar(
+        select(func.count())
+        .select_from(MealEntryAudit)
+        .where(
+            MealEntryAudit.entry_id == entry_id,
+            MealEntryAudit.changed_field == MealField.EATING,
+        )
+    )
+    return (n or 0) > 1
 
 
 async def day_summary(session: AsyncSession, d: Date) -> DaySummary:

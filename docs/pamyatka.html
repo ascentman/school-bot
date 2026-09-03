@@ -345,7 +345,7 @@
   <header>
     <div>
       <h1>Облік харчування — що робити вчителю</h1>
-      <p class="lede">Реєстрація займає дві хвилини й робиться один раз. Далі щоранку бот сам питає, скільки дітей харчується — ви відповідаєте одним дотиком.</p>
+      <p class="lede">Реєстрація займає дві хвилини й робиться один раз. Далі щоранку бот сам питає — ви відповідаєте дотиками по цифрах, без набирання тексту.</p>
     </div>
     <a class="botlink" href="https://t.me/school44_bot">t.me/school44_bot</a>
   </header>
@@ -413,7 +413,7 @@
   <div class="daily">
     <div class="n">5</div>
     <div>
-      <h2>Щоранку о 9:05 — один дотик</h2>
+      <h2>Щоранку о 9:05 — два-три дотики</h2>
       <p>Бот надішле окреме повідомлення <strong>по кожному вашому класу</strong>. Знайдіть потрібну цифру й натисніть її — писати нічого не треба.</p>
       <p><strong>Кнопка вгорі</strong> — скільки було минулого разу. Найчастіше саме її й треба.</p>
       <p><em>0 — немає</em> · якщо сьогодні клас не харчується.<br>
@@ -431,8 +431,41 @@
     </div>
   </div>
 
-  <div class="fix">
+  <div class="daily">
     <div class="n">6</div>
+    <div>
+      <h2>Далі — відсутні</h2>
+      <p>Одразу після цифри харчування бот запитає, <strong>скільки дітей сьогодні немає</strong>. Знову один дотик.</p>
+      <p>Якщо не знаєте або не рахували — <em>⏭ Пропустити</em>. Цифра харчування вже збережена, її це не скасовує.</p>
+    </div>
+    <div class="scr">
+      <div class="msg"><strong>✅ 3-Б</strong> · 1 вересня — харчуються: <strong>24</strong><br><br>Всього відсутніх?</div>
+      <div class="numpad">
+        <span class="btn">0</span><span class="btn">1</span><span class="btn">2</span><span class="btn">3</span>
+        <span class="btn">4</span><span class="btn">5</span><span class="btn">6</span><span class="btn">7</span>
+      </div>
+      <div><span class="btn" style="width:100%;text-align:center">⏭ Пропустити</span></div>
+    </div>
+  </div>
+
+  <div class="daily">
+    <div class="n">7</div>
+    <div>
+      <h2>І скільки з них хворіють</h2>
+      <p>Це <strong>третє питання ставиться не завжди</strong> — лише якщо відсутні є. Відповіли «0 відсутніх» — бот більше нічого не питає.</p>
+      <p>Цифр більше, ніж відсутніх, тут не буває: на екрані рівно стільки кнопок, скільки дітей немає.</p>
+    </div>
+    <div class="scr">
+      <div class="msg"><strong>✅ 3-Б</strong> · 1 вересня — відсутні: <strong>3</strong><br><br>З них по хворобі?</div>
+      <div class="numpad">
+        <span class="btn">0</span><span class="btn">1</span><span class="btn">2</span><span class="btn">3</span>
+      </div>
+      <div><span class="btn" style="width:100%;text-align:center">⏭ Пропустити</span></div>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="n">8</div>
     <div>
       <h2>Дитина прийшла пізніше — виправте цифру</h2>
       <p>Відповідь не остаточна. Змінити її можна будь-коли протягом дня — двома способами.</p>
