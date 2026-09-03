@@ -151,6 +151,33 @@ async def test_digest_offers_buttons_for_missing_classes(bot, maker, school):
     assert labels == ["1-А", "3-Б", "5-В"]
 
 
+async def test_digest_attaches_the_day_pdf(bot, maker, school):
+    """Зведення о 09:35 приходить разом із PDF за той самий день."""
+    await jobs.admin_digest(bot, maker, MONDAY)
+
+    docs = bot.docs_to(2002)
+    assert [d.filename for d in docs] == ["harchuvannia_2026-09-07.pdf"]
+    assert bot.docs_to(1001) == []      # вчителю звіт не йде
+
+
+async def test_digest_survives_a_failing_pdf_send(maker, school):
+    """Файл не дійшов — зведення все одно вважається виконаним.
+
+    Головні цифри вже в тексті; якщо через збій на файлі джоб лишався б
+    непозначеним, наступний старт розіслав би зведення вдруге.
+    """
+    class NoDocumentsBot(FakeBot):
+        async def send_document(self, chat_id, document, **kwargs):
+            raise RuntimeError("Telegram відмовив")
+
+    bot = NoDocumentsBot()
+    assert await jobs.admin_digest(bot, maker, MONDAY) == 1
+    assert bot.to(2002)[0].text
+
+    async with maker() as s:
+        assert await jobs.has_run(s, "digest", MONDAY)
+
+
 # --- стійкість ------------------------------------------------------------
 
 

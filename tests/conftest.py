@@ -54,17 +54,33 @@ class SentMessage:
 
 
 @dataclass
+class SentDocument:
+    chat_id: int
+    filename: str
+
+
+@dataclass
 class FakeBot:
     """Мінімальний двійник Bot: запамʼятовує все, що йому передали."""
 
     sent: list[SentMessage] = field(default_factory=list)
+    documents: list[SentDocument] = field(default_factory=list)
 
     async def send_message(self, chat_id, text, reply_markup=None, **kwargs):
         self.sent.append(SentMessage(chat_id, text, reply_markup))
         return SentMessage(chat_id, text, reply_markup)
 
+    async def send_document(self, chat_id, document, **kwargs):
+        # Ім'я файлу — єдине, що видно отримувачу до відкриття, тож саме його
+        # й перевіряємо; вміст PDF тестується окремо, без Telegram.
+        self.documents.append(SentDocument(chat_id, getattr(document, "filename", "")))
+        return SentDocument(chat_id, getattr(document, "filename", ""))
+
     def to(self, chat_id: int) -> list[SentMessage]:
         return [m for m in self.sent if m.chat_id == chat_id]
+
+    def docs_to(self, chat_id: int) -> list[SentDocument]:
+        return [d for d in self.documents if d.chat_id == chat_id]
 
 
 @pytest_asyncio.fixture

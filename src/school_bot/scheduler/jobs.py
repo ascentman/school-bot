@@ -17,6 +17,7 @@ from aiogram.exceptions import (
     TelegramForbiddenError,
     TelegramRetryAfter,
 )
+from aiogram.types import BufferedInputFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -33,7 +34,9 @@ from school_bot.domain.meals import (
     primary_teacher_ids,
 )
 from school_bot.reports import sheets
+from school_bot.reports.day import build_day_report, day_report_filename
 from school_bot.reports.matrix import available_months, build_month_matrix
+from school_bot.reports.pdf import render_day_pdf
 
 log = logging.getLogger(__name__)
 
@@ -115,6 +118,29 @@ async def _send(
         return False
     except Exception:
         log.exception("Не вдалося надіслати повідомлення до %s", label)
+        return False
+
+
+async def _send_document(bot: Bot, chat_id: int, document: BufferedInputFile) -> bool:
+    """Надіслати файл. Невдача не має зривати зведення.
+
+    Текст зведення вже дійшов і містить головні цифри; PDF — зручність поверх
+    нього. Тому помилку логуємо, але джоб вважається виконаним.
+    """
+    try:
+        await bot.send_document(chat_id, document)
+        return True
+    except TelegramRetryAfter as e:
+        log.warning("Флуд-контроль на файлі, чекаю %s с", e.retry_after)
+        await asyncio.sleep(e.retry_after)
+        try:
+            await bot.send_document(chat_id, document)
+            return True
+        except Exception:
+            log.exception("Не вдалося надіслати PDF до %s", chat_id)
+            return False
+    except Exception:
+        log.exception("Не вдалося надіслати PDF до %s", chat_id)
         return False
 
 
@@ -266,10 +292,21 @@ async def admin_digest(
         )
         markup = keyboards.missing_classes(d, missing) if missing else None
 
+        report = await build_day_report(
+            session, d, school_name=settings.school_name, slots=settings.meal_slots
+        )
+        document = (
+            BufferedInputFile(render_day_pdf(report), filename=day_report_filename(d))
+            if report.expected
+            else None
+        )
+
         for chat_id in await _admin_chat_ids(session):
             attempted += 1
             if await _send(bot, chat_id, text, reply_markup=markup):
                 sent += 1
+                if document is not None:
+                    await _send_document(bot, chat_id, document)
 
         if _should_mark(attempted, sent):
             await mark_run(session, "digest", d)

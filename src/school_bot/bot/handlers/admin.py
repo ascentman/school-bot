@@ -33,8 +33,9 @@ from school_bot.domain.dates import format_date
 from school_bot.domain.meals import active_classes, classes_for_teacher, day_summary
 from school_bot.domain.phones import format_phone
 from school_bot.domain.teachers import clean_name, free_number, import_teachers
+from school_bot.reports.day import build_day_report, day_report_filename
 from school_bot.reports.matrix import available_months, build_month_matrix
-from school_bot.reports.pdf import render_pdf
+from school_bot.reports.pdf import render_day_pdf, render_pdf
 from school_bot.reports.xlsx import render_xlsx
 from school_bot.scheduler.jobs import sync_all_months
 
@@ -95,6 +96,13 @@ async def today_summary(message: Message, session: AsyncSession) -> None:
     await message.answer(
         "\n".join(lines),
         reply_markup=keyboards.missing_classes(d, missing) if missing else None,
+    )
+
+    report = await build_day_report(
+        session, d, school_name=settings.school_name, slots=settings.meal_slots
+    )
+    await message.answer_document(
+        BufferedInputFile(render_day_pdf(report), filename=day_report_filename(d))
     )
 
 
