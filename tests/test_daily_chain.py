@@ -215,6 +215,66 @@ async def test_manual_entry_also_enters_the_chain(dispatcher, api_bot, maker, sc
     assert entry.eating_count == 27
 
 
+async def test_absent_above_the_pad_can_be_entered_by_hand(
+    dispatcher, api_bot, maker, school, send
+):
+    """Карантин: відсутніх більше, ніж кнопок на сітці.
+
+    Знайдено на рев'ю PR #11 — без «Іншої цифри» цифра мовчки обрізалася б до
+    найбільшої кнопки, і звіт занизив би відсутність без жодного попередження.
+    """
+    from school_bot.bot.callbacks import MealManualAbsent
+
+    class_id = school["classes"][0]
+    await _press(
+        dispatcher, api_bot, maker,
+        MealSet(class_id=class_id, d=MONDAY.toordinal(), value=4).pack(), tg_id=1001,
+    )
+    await _press(
+        dispatcher, api_bot, maker,
+        MealManualAbsent(class_id=class_id, d=MONDAY.toordinal()).pack(), tg_id=1001,
+    )
+    texts_out = await send("23", tg_id=1001)
+
+    assert (await _entry(maker, class_id)).absent_count == 23
+    assert any("по хворобі" in t for t in texts_out)   # ланцюжок триває
+
+
+async def test_manual_sick_still_respects_the_cap(dispatcher, api_bot, maker, school, send):
+    """Ручний ввід — другий шлях, а не обхідний повз стелю."""
+    from school_bot.bot.callbacks import MealManualSick
+
+    class_id = school["classes"][0]
+    for data in (
+        MealSet(class_id=class_id, d=MONDAY.toordinal(), value=4).pack(),
+        MealAbsent(class_id=class_id, d=MONDAY.toordinal(), value=3).pack(),
+    ):
+        await _press(dispatcher, api_bot, maker, data, tg_id=1001)
+    await _press(
+        dispatcher, api_bot, maker,
+        MealManualSick(class_id=class_id, d=MONDAY.toordinal()).pack(), tg_id=1001,
+    )
+    await send("9", tg_id=1001)
+
+    assert (await _entry(maker, class_id)).sick_count is None, "9 хворих при 3 відсутніх"
+
+
+async def test_lowering_absent_later_clips_sick(dispatcher, api_bot, maker, school):
+    """Сценарій із рев'ю: зменшили відсутніх і пропустили третій крок."""
+    class_id = school["classes"][0]
+    for data in (
+        MealSet(class_id=class_id, d=MONDAY.toordinal(), value=24).pack(),
+        MealAbsent(class_id=class_id, d=MONDAY.toordinal(), value=5).pack(),
+        MealSick(class_id=class_id, d=MONDAY.toordinal(), value=3).pack(),
+        MealAbsent(class_id=class_id, d=MONDAY.toordinal(), value=2).pack(),
+        MealSick(class_id=class_id, d=MONDAY.toordinal(), value=None).pack(),
+    ):
+        await _press(dispatcher, api_bot, maker, data, tg_id=1001)
+
+    entry = await _entry(maker, class_id)
+    assert (entry.absent_count, entry.sick_count) == (2, 2)
+
+
 async def test_admin_goes_through_the_same_chain(dispatcher, api_bot, maker, school):
     """Адмін вводить за клас, який не подав, — і теж проходить усі кроки."""
     class_id = school["classes"][2]      # клас Оксани-адміна

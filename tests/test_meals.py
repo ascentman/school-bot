@@ -388,3 +388,57 @@ async def test_was_corrected_distinguishes_first_answer_from_a_fix(session, clas
         session, class_id=classes[0].id, d=MONDAY, eating_count=26, teacher_id=None
     )
     assert await was_corrected(session, entry.id) is True
+
+
+async def test_lowering_absent_clips_sick_to_it(session, classes):
+    """Хворих не буває більше за відсутніх — навіть заднім числом.
+
+    Знайдено на рев'ю PR #11: вчитель указав 5 відсутніх і 3 хворих, потім
+    повернувся ланцюжком, зменшив відсутніх до 2 і пропустив третій крок.
+    Стеля в клавіатурі тут не рятує — цифру хворих ніхто повторно не вводив.
+    """
+    from school_bot.db.models import MealField
+
+    await upsert_entry(
+        session, class_id=classes[0].id, d=MONDAY, eating_count=24,
+        absent_count=5, sick_count=3, teacher_id=None,
+    )
+    await upsert_entry(
+        session, class_id=classes[0].id, d=MONDAY, absent_count=2, teacher_id=None
+    )
+
+    entry = await get_entry(session, classes[0].id, MONDAY)
+    assert (entry.absent_count, entry.sick_count) == (2, 2)
+
+    # Підрізання — теж правка, і воно має бути видиме в журналі.
+    rows = list(
+        await session.scalars(
+            select(MealEntryAudit).where(
+                MealEntryAudit.entry_id == entry.id,
+                MealEntryAudit.changed_field == MealField.SICK,
+            )
+        )
+    )
+    assert [(r.old_value, r.new_value) for r in rows] == [(None, 3), (3, 2)]
+
+
+async def test_lowering_absent_leaves_a_smaller_sick_alone(session, classes):
+    await upsert_entry(
+        session, class_id=classes[0].id, d=MONDAY, eating_count=24,
+        absent_count=5, sick_count=1, teacher_id=None,
+    )
+    await upsert_entry(
+        session, class_id=classes[0].id, d=MONDAY, absent_count=3, teacher_id=None
+    )
+    entry = await get_entry(session, classes[0].id, MONDAY)
+    assert (entry.absent_count, entry.sick_count) == (3, 1)
+
+
+async def test_zero_absent_still_means_zero_sick(session, classes):
+    """Нуль відсутніх лишає хворих нулем, а не порожнім."""
+    await upsert_entry(
+        session, class_id=classes[0].id, d=MONDAY, eating_count=24,
+        absent_count=0, sick_count=0, teacher_id=None,
+    )
+    entry = await get_entry(session, classes[0].id, MONDAY)
+    assert (entry.absent_count, entry.sick_count) == (0, 0)

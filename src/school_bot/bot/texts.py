@@ -214,6 +214,8 @@ UNKNOWN_INPUT = (
 )
 
 MANUAL_ASK = "Надішліть кількість дітей числом (наприклад: <code>27</code>)."
+MANUAL_ASK_ABSENT = "Надішліть кількість відсутніх числом (наприклад: <code>23</code>)."
+MANUAL_ASK_SICK = "Надішліть кількість хворих числом (наприклад: <code>12</code>)."
 MANUAL_CANCELLED = "Скасовано."
 
 

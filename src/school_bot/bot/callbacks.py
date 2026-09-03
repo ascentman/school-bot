@@ -91,3 +91,17 @@ class MealSick(CallbackData, _HasDate, prefix="msk"):
     class_id: int
     d: int
     value: int | None
+
+
+class MealManualAbsent(CallbackData, _HasDate, prefix="mma"):
+    """«Інша цифра» на кроці відсутніх — коли їх більше, ніж є на сітці."""
+
+    class_id: int
+    d: int
+
+
+class MealManualSick(CallbackData, _HasDate, prefix="mms"):
+    """«Інша цифра» на кроці хворих."""
+
+    class_id: int
+    d: int

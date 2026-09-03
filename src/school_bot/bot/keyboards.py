@@ -19,6 +19,8 @@ from school_bot.bot.callbacks import (
     MealAbsent,
     MealEdit,
     MealManual,
+    MealManualAbsent,
+    MealManualSick,
     MealSet,
     MealSick,
     MonthPick,
@@ -35,6 +37,7 @@ DEFAULT_CENTER = 20
 SMALL_PAD_WIDTH = 5
 ABSENT_SPAN = 20   # 0..19 — вистачає навіть на грип у класі
 SKIP_LABEL = "⏭ Пропустити"
+MANUAL_LABEL = "✏️ Інша цифра"
 
 
 def number_pad(
@@ -88,12 +91,14 @@ def number_pad(
 
 
 def _small_pad(
-    buttons: list[InlineKeyboardButton], skip: InlineKeyboardButton
+    buttons: list[InlineKeyboardButton],
+    manual: InlineKeyboardButton,
+    skip: InlineKeyboardButton,
 ) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for i in range(0, len(buttons), SMALL_PAD_WIDTH):
         kb.row(*buttons[i : i + SMALL_PAD_WIDTH])
-    kb.row(skip)
+    kb.row(manual, skip)
     return kb.as_markup()
 
 
@@ -110,10 +115,9 @@ def absent_pad(
     Кількість відсутніх скаче день у день, тому вчорашня цифра нічого не
     підказує — на відміну від харчування. Натомість 0 стоїть першим.
 
-    «Іншої цифри» тут немає навмисно: вона тягне за собою FSM, а стан у боті
-    памʼятається лише до перезапуску й лише один на вчителя — класний керівник
-    двох класів не зміг би відповідати по обох. Тому сітка одразу покриває
-    весь реалістичний діапазон.
+    Сітка коротка (0..19), а на випадок карантину поруч є «Інша цифра»: без неї
+    масова відсутність мовчки обрізалася б до найбільшої кнопки, і звіт занизив
+    би реальну цифру.
     """
     top = min(max_children, ABSENT_SPAN - 1)
     buttons = [
@@ -123,29 +127,42 @@ def absent_pad(
         )
         for n in range(0, top + 1)
     ]
+    manual = InlineKeyboardButton(
+        text=MANUAL_LABEL,
+        callback_data=MealManualAbsent(class_id=class_id, d=d.toordinal()).pack(),
+    )
     skip = InlineKeyboardButton(
         text=SKIP_LABEL,
         callback_data=MealAbsent(class_id=class_id, d=d.toordinal(), value=None).pack(),
     )
-    return _small_pad(buttons, skip)
+    return _small_pad(buttons, manual, skip)
 
 
 def sick_pad(
     class_id: int, d: Date, *, current: int | None, max_absent: int
 ) -> InlineKeyboardMarkup:
-    """Крок 3. Стеля — кількість відсутніх: хворих не буває більше за відсутніх."""
+    """Крок 3. Стеля — кількість відсутніх: хворих не буває більше за відсутніх.
+
+    Показуємо не більше ABSENT_SPAN кнопок: якщо відсутніх 30, сітка на 31
+    кнопку була б стіною. Решта — через «Іншу цифру», де стеля перевіряється
+    на сервері.
+    """
     buttons = [
         InlineKeyboardButton(
             text=_mark(n, current),
             callback_data=MealSick(class_id=class_id, d=d.toordinal(), value=n).pack(),
         )
-        for n in range(0, max_absent + 1)
+        for n in range(0, min(max_absent, ABSENT_SPAN - 1) + 1)
     ]
+    manual = InlineKeyboardButton(
+        text=MANUAL_LABEL,
+        callback_data=MealManualSick(class_id=class_id, d=d.toordinal()).pack(),
+    )
     skip = InlineKeyboardButton(
         text=SKIP_LABEL,
         callback_data=MealSick(class_id=class_id, d=d.toordinal(), value=None).pack(),
     )
-    return _small_pad(buttons, skip)
+    return _small_pad(buttons, manual, skip)
 
 
 def edit_button(class_id: int, d: Date) -> InlineKeyboardMarkup:

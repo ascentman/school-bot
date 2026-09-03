@@ -187,6 +187,19 @@ async def upsert_entry(
         if row is not None:
             audits.append(row)
 
+    # Хворих не буває більше за відсутніх. Стеля в клавіатурі цього не
+    # гарантує: вчитель може повернутися ланцюжком і ЗМЕНШИТИ відсутніх уже
+    # після того, як указав хворих, а тоді пропустити третій крок — і запис
+    # лишився б із «відсутні 2 · хворі 3». Тому інваріант тримаємо тут, де
+    # пишуться дані, а не в кожному хендлері окремо.
+    if entry.absent_count is not None and (entry.sick_count or 0) > entry.absent_count:
+        clipped = _audit_change(
+            entry, "sick_count", MealField.SICK, entry.absent_count,
+            teacher_id=teacher_id, reason=reason or "хворих підрізано до кількості відсутніх",
+        )
+        if clipped is not None:
+            audits.append(clipped)
+
     if audits:
         # Автора й джерело оновлюємо лише разом зі справжньою зміною: повторний
         # тап по тій самій цифрі не має переписувати, хто ввів запис.
