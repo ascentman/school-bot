@@ -232,7 +232,7 @@ def render_day_pdf(report: DayReport) -> bytes:
     def cell(v: int | None) -> str:
         return "—" if v is None else str(v)
 
-    data: list[list[str]] = [["Клас", "Дітей", "Відсутні", "З них хворі"]]
+    data: list[list[str]] = [["Клас", "Харчуються", "Відсутні", "З них хворі"]]
     # Рядки-заголовки змін фарбуються окремо від рядків класів, тому їхні
     # номери запамʼятовуємо просто під час збирання таблиці.
     group_rows: list[int] = []
