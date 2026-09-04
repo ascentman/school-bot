@@ -200,6 +200,9 @@ def render_pdf(*matrices: MonthMatrix) -> bytes:
 # вміщається. Дві колонки поруч — бо 35 рядків в одну таким шрифтом не лягають.
 ONE_PAGE_MAX_FONT = 26
 ONE_PAGE_MIN_FONT = 8
+# Шапку читають один раз, тож вона не має тягнути вниз кегль усієї таблиці:
+# «Харч.» у вузькій колонці інакше обмежував би цифри, заради яких усе й є.
+HEADER_FONT_CAP = 13
 
 PAGE_MARGIN = 14 * mm
 USABLE_WIDTH = A4[0] - 2 * PAGE_MARGIN      # 182 мм
@@ -210,8 +213,8 @@ HALF_WIDTH = (USABLE_WIDTH - 2 * COLUMN_GAP) / 2
 # має вкладатися в HALF_WIDTH — інакше таблиця мовчки наїде на поля: reportlab
 # падає лише по висоті, а надто широку просто центрує поверх берегів.
 KIND_COLUMNS: dict[ReportKind, tuple[list[str], list[float]]] = {
-    ReportKind.MEALS: (["Клас", "Харч."], [56 * mm, 32 * mm]),
-    ReportKind.ABSENCE: (["Клас", "Відс.", "Хворі"], [42 * mm, 23 * mm, 23 * mm]),
+    ReportKind.MEALS: (["Клас", "Харч."], [64 * mm, 24 * mm]),
+    ReportKind.ABSENCE: (["Клас", "Відс.", "Хворі"], [46 * mm, 21 * mm, 21 * mm]),
 }
 
 
@@ -289,10 +292,11 @@ def _fits_width(
     комірці — задовгий підпис просто виповзає за рамку, і сторінок при цьому
     не більшає. Тобто переповнення по ширині не видно ні звідки, крім оцього.
     """
-    for cells, is_group in [(headers, True), *rows]:
-        face = bold if is_group else font
+    checks = [(headers, bold, min(size, HEADER_FONT_CAP))]
+    checks += [(cells, bold if is_group else font, size) for cells, is_group in rows]
+    for cells, face, cell_size in checks:
         for text, width in zip(cells, widths, strict=True):
-            if pdfmetrics.stringWidth(text, face, size) > width - 12:
+            if pdfmetrics.stringWidth(text, face, cell_size) > width - 12:
                 return False
     return True
 
@@ -327,6 +331,7 @@ def _half_table(
         ("FONTNAME", (0, 0), (-1, -1), font),
         ("FONTNAME", (0, 0), (-1, 0), bold),
         ("FONTSIZE", (0, 0), (-1, -1), size),
+        ("FONTSIZE", (0, 0), (-1, 0), min(size, HEADER_FONT_CAP)),
         # Без явного leading reportlab лишає висоту рядка від стилю за
         # замовчуванням, і при великому кеглі текст налазить сам на себе.
         ("LEADING", (0, 0), (-1, -1), size * 1.15),

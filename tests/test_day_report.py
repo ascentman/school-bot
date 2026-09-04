@@ -306,21 +306,60 @@ def test_meals_report_always_fits_one_page(n):
     assert _pages(pdf) == 1, f"{n} класів дали більше однієї сторінки"
 
 
-def test_font_shrinks_only_when_it_has_to():
-    """Маленька школа має отримати найбільший кегль, а не той самий, що велика."""
+def test_longer_labels_force_a_smaller_font():
+    """Кегль має спадати саме від довжини підписів, а не бути сталим.
+
+    Абсолютне число тут пиняти не можна: метрики шрифтів різні на різних
+    системах (локально Arial, на сервері DejaVu), тож той самий кегль дає
+    різну ширину. Перевіряємо відношення, а не значення — воно й описує логіку.
+    """
     from school_bot.reports.pdf import (
         KIND_COLUMNS,
         ONE_PAGE_MAX_FONT,
         _best_font,
         _bold_font,
         _cyrillic_font,
-        _report_rows,
     )
 
     headers, widths = KIND_COLUMNS[ReportKind.MEALS]
-    rows = _report_rows(_report_with(3), ReportKind.MEALS)
-    size = _best_font(rows, headers, widths, _cyrillic_font(), _bold_font())
-    assert size == ONE_PAGE_MAX_FONT
+    font, bold = _cyrillic_font(), _bold_font()
+
+    short = _best_font([(["1-А", "20"], False)], headers, widths, font, bold)
+    long_label = _best_font(
+        [(["08:45 – 09:00 (перша зміна, молодші класи)", "20"], True)],
+        headers, widths, font, bold,
+    )
+
+    assert long_label < short, "довгий підпис зміни має зменшити кегль"
+    assert short <= ONE_PAGE_MAX_FONT
+    assert long_label >= 8, "кегль не має падати до нечитабельного"
+
+
+def test_header_does_not_hold_back_the_numbers():
+    """Шапку читають раз, цифри — весь час, тож вона не має тягнути кегль униз.
+
+    «Харч.» у вузькій колонці інакше обмежував би розмір самих цифр, заради
+    яких звіт і роблять.
+    """
+    from school_bot.reports.pdf import (
+        HEADER_FONT_CAP,
+        KIND_COLUMNS,
+        _best_font,
+        _bold_font,
+        _cyrillic_font,
+    )
+
+    _, widths = KIND_COLUMNS[ReportKind.MEALS]
+    font, bold = _cyrillic_font(), _bold_font()
+    rows = [(["1-А", "20"], False)]
+
+    # Обидві шапки вміщаються при HEADER_FONT_CAP, тож кегль цифр однаковий —
+    # хоча «Харч.» удвічі довша за «Ч» і без стелі тягнула б таблицю вниз.
+    short_header = _best_font(rows, ["К", "Ч"], widths, font, bold)
+    real_header = _best_font(rows, ["Клас", "Харч."], widths, font, bold)
+
+    assert real_header == short_header, "шапка зменшила кегль цифр"
+    assert HEADER_FONT_CAP < short_header
 
 
 def test_columns_never_split_a_serving_slot():
