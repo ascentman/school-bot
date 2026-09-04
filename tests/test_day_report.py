@@ -19,11 +19,12 @@ from school_bot.domain.classes import parse_class_name
 from school_bot.domain.slots import parse_meal_slots
 from school_bot.reports.day import (
     UNSCHEDULED_LABEL,
+    ReportKind,
     build_day_report,
     build_report,
     day_report_filename,
 )
-from school_bot.reports.pdf import render_day_pdf
+from school_bot.reports.pdf import render_day_report
 
 DAY = date(2026, 9, 3)
 
@@ -198,7 +199,7 @@ async def test_pdf_renders_for_a_real_day(session, classes):
     report = await build_day_report(
         session, DAY, school_name="44 Школа", slots=parse_meal_slots(SCHEDULE)
     )
-    pdf = render_day_pdf(report)
+    pdf = render_day_report(report, ReportKind.MEALS)
     assert pdf.startswith(b"%PDF")
     assert len(pdf) > 1000
 
@@ -207,7 +208,7 @@ async def test_pdf_renders_for_a_real_day(session, classes):
 async def test_pdf_renders_when_nobody_submitted_anything(session, classes):
     """День без жодної цифри — звичайний стан о 09:35, не привід падати."""
     report = await build_day_report(session, DAY, slots=parse_meal_slots(SCHEDULE))
-    assert render_day_pdf(report).startswith(b"%PDF")
+    assert render_day_report(report, ReportKind.ABSENCE).startswith(b"%PDF")
 
 
 def test_filename_carries_the_date():
@@ -271,3 +272,181 @@ async def test_totals_stay_empty_when_nobody_reported_absences(session, classes)
     report = await build_day_report(session, DAY)
     assert report.absent_total is None
     assert report.sick_total is None
+
+
+# --- звіт про харчування завжди на одному аркуші ---------------------------
+
+
+def _pages(pdf: bytes) -> int:
+    return pdf.count(b"/Type /Page") - pdf.count(b"/Type /Pages")
+
+
+def _report_with(n_classes: int) -> object:
+    from school_bot.domain.meals import ClassDayStatus, DaySummary
+
+    statuses = [
+        ClassDayStatus(
+            school_class=SchoolClass(name=f"{i // 3 + 1}-{'АБВ'[i % 3]}",
+                                     grade=i // 3 + 1, letter="АБВ"[i % 3]),
+            entry=MealEntry(date=DAY, eating_count=20 + i % 9),
+        )
+        for i in range(n_classes)
+    ]
+    return build_report(DaySummary(date=DAY, statuses=statuses), school_name="44 Школа")
+
+
+@pytest.mark.parametrize("n", [3, 25, 33, 45])
+def test_meals_report_always_fits_one_page(n):
+    """Головна вимога: аркуш один, скільки б не було класів.
+
+    Кегль підбирається сам, тож зростання школи має зменшувати шрифт, а не
+    додавати другу сторінку — її просто не понесуть на роздачу.
+    """
+    pdf = render_day_report(_report_with(n), ReportKind.MEALS)
+    assert _pages(pdf) == 1, f"{n} класів дали більше однієї сторінки"
+
+
+def test_longer_labels_force_a_smaller_font():
+    """Кегль має спадати саме від довжини підписів, а не бути сталим.
+
+    Абсолютне число тут пиняти не можна: метрики шрифтів різні на різних
+    системах (локально Arial, на сервері DejaVu), тож той самий кегль дає
+    різну ширину. Перевіряємо відношення, а не значення — воно й описує логіку.
+    """
+    from school_bot.reports.pdf import (
+        KIND_COLUMNS,
+        ONE_PAGE_MAX_FONT,
+        _best_font,
+        _bold_font,
+        _cyrillic_font,
+    )
+
+    headers, widths = KIND_COLUMNS[ReportKind.MEALS]
+    font, bold = _cyrillic_font(), _bold_font()
+
+    short = _best_font([(["1-А", "20"], False)], headers, widths, font, bold)
+    long_label = _best_font(
+        [(["08:45 – 09:00 (перша зміна, молодші класи)", "20"], True)],
+        headers, widths, font, bold,
+    )
+
+    assert long_label < short, "довгий підпис зміни має зменшити кегль"
+    assert short <= ONE_PAGE_MAX_FONT
+    assert long_label >= 8, "кегль не має падати до нечитабельного"
+
+
+def test_header_does_not_hold_back_the_numbers():
+    """Шапку читають раз, цифри — весь час, тож вона не має тягнути кегль униз.
+
+    «Харч.» у вузькій колонці інакше обмежував би розмір самих цифр, заради
+    яких звіт і роблять.
+    """
+    from school_bot.reports.pdf import (
+        HEADER_FONT_CAP,
+        KIND_COLUMNS,
+        _best_font,
+        _bold_font,
+        _cyrillic_font,
+    )
+
+    _, widths = KIND_COLUMNS[ReportKind.MEALS]
+    font, bold = _cyrillic_font(), _bold_font()
+    rows = [(["1-А", "20"], False)]
+
+    # Обидві шапки вміщаються при HEADER_FONT_CAP, тож кегль цифр однаковий —
+    # хоча «Харч.» удвічі довша за «Ч» і без стелі тягнула б таблицю вниз.
+    short_header = _best_font(rows, ["К", "Ч"], widths, font, bold)
+    real_header = _best_font(rows, ["Клас", "Харч."], widths, font, bold)
+
+    assert real_header == short_header, "шапка зменшила кегль цифр"
+    assert HEADER_FONT_CAP < short_header
+
+
+def test_columns_never_split_a_serving_slot():
+    """Зміну не можна розірвати між колонками — око шукає її цілою."""
+    from school_bot.reports.pdf import _split_in_two
+
+    rows = [
+        (["08:45 – 09:00", "5"], True),
+        (["1-А", "5"], False),
+        (["09:15 – 09:30", "7"], True),
+        (["2-А", "7"], False),
+    ]
+    left, right = _split_in_two(rows)
+    assert right[0][1] is True, "друга колонка має починатися зі зміни"
+    assert left and right
+
+
+@pytest.mark.parametrize("n", [60, 80])
+def test_one_page_holds_for_a_very_large_school(n):
+    """Межа одного аркуша має триматися далеко за межами реальної школи."""
+    for kind in (ReportKind.MEALS, ReportKind.ABSENCE):
+        assert _pages(render_day_report(_report_with(n), kind)) == 1
+
+
+@pytest.mark.parametrize("n", [100, 200])
+def test_enormous_school_gets_pages_instead_of_nothing(n):
+    """За межею аркуша звіт друкується в кілька сторінок, а не зникає.
+
+    Знайдено на рев'ю PR #13: двоколонковий блок нерозривний, тож reportlab
+    кидав LayoutError, джоб мовчки його ковтав — і того дня не приходило ні
+    PDF, ні листа, без жодного натяку чому.
+    """
+    for kind in (ReportKind.MEALS, ReportKind.ABSENCE):
+        pdf = render_day_report(_report_with(n), kind)   # не має кидати виняток
+        assert pdf.startswith(b"%PDF")
+        assert _pages(pdf) > 1
+
+
+@pytest.mark.parametrize("n", [3, 25, 33, 45])
+def test_absence_report_also_fits_one_page(n):
+    """Той самий аркуш і для відсутніх: його теж друкують."""
+    pdf = render_day_report(_report_with(n), ReportKind.ABSENCE)
+    assert _pages(pdf) == 1, f"{n} класів дали більше однієї сторінки"
+
+
+def test_table_fits_the_printed_area():
+    """Таблиця не має наїжджати на береги.
+
+    Знайдено на рев'ю PR #13: проміжок додавався до кожної половини, і 188 мм
+    опинялися в рамці 182 мм. reportlab падає лише по висоті — надто широку
+    таблицю він просто центрує поверх берегів, тож на екрані це непомітно,
+    а на роздруку видно.
+    """
+    from school_bot.reports.pdf import (
+        COLUMN_GAP,
+        HALF_WIDTH,
+        KIND_COLUMNS,
+        USABLE_WIDTH,
+    )
+
+    assert 2 * (HALF_WIDTH + COLUMN_GAP) <= USABLE_WIDTH
+    for kind, (_, widths) in KIND_COLUMNS.items():
+        assert sum(widths) <= HALF_WIDTH, f"{kind.value}: колонки ширші за половину"
+
+
+def test_single_serving_slot_keeps_a_header_in_both_columns():
+    """Школа з однією зміною: права колонка не має лишитися без підпису.
+
+    Знайдено на рев'ю PR #13 — межі груп не було, і код падав у наївний розріз
+    посередині, лишаючи половину класів без заголовка.
+    """
+    from school_bot.reports.pdf import _split_in_two
+
+    rows = [(["08:45 – 09:00", "50"], True)]
+    rows += [([f"{i}-А", "10"], False) for i in range(1, 11)]
+
+    left, right = _split_in_two(rows)
+    assert left[0][1] is True
+    assert right[0][1] is True, "друга колонка без заголовка зміни"
+    assert right[0][0][0] == "08:45 – 09:00"
+
+
+def test_no_slots_at_all_still_splits():
+    """Без MEAL_SLOTS заголовків немає взагалі — розріз має просто спрацювати."""
+    from school_bot.reports.pdf import _split_in_two
+
+    rows = [([f"{i}-А", "10"], False) for i in range(1, 11)]
+    left, right = _split_in_two(rows)
+    assert len(left) + len(right) == 10
+    assert left and right

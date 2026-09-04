@@ -36,7 +36,7 @@ from school_bot.domain.teachers import clean_name, free_number, import_teachers
 from school_bot.reports.matrix import available_months, build_month_matrices
 from school_bot.reports.pdf import render_pdf
 from school_bot.reports.xlsx import render_xlsx
-from school_bot.scheduler.jobs import day_pdf_attachment, sync_all_months
+from school_bot.scheduler.jobs import day_report_attachments, sync_all_months
 
 log = logging.getLogger(__name__)
 router = Router(name="admin")
@@ -97,10 +97,9 @@ async def today_summary(message: Message, session: AsyncSession) -> None:
         reply_markup=keyboards.missing_classes(d, missing) if missing else None,
     )
 
-    # Той самий summary, що й у тексті вище, і та сама безпечна побудова, що в
-    # розсилці: збій рендеру має коштувати файл, а не всю відповідь.
-    document = day_pdf_attachment(summary)
-    if document is not None:
+    # Обидва звіти — ті самі, що приходять уранці. Кнопка має показувати те,
+    # що людина вже звикла бачити, а не третій, окремий вигляд.
+    for document in day_report_attachments(summary):
         await message.answer_document(document)
 
 
@@ -568,7 +567,8 @@ async def settings_view(message: Message, session: AsyncSession) -> None:
         "Нагадування: <b>"
         + ", ".join(f"{t:%H:%M}" for t in settings.remind_times)
         + "</b>",
-        f"Зведення адміну: <b>{settings.digest_time:%H:%M}</b>",
+        f"Звіт про харчування: <b>{settings.meals_report_time:%H:%M}</b>",
+        f"Звіт про відсутніх: <b>{settings.absence_report_time:%H:%M}</b>",
         f"Активних класів: {len(classes)}",
         "",
     ]

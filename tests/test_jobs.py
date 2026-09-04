@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from school_bot.db.models import DayKind, SchoolClass, Teacher
 from school_bot.domain.calendar import mark_range
 from school_bot.domain.meals import upsert_entry
@@ -111,10 +113,31 @@ async def test_remind_silent_on_weekend(bot, maker, school):
     assert await jobs.remind(bot, maker, SATURDAY) == 0
 
 
-# --- admin_digest ---------------------------------------------------------
+# --- щоденні звіти --------------------------------------------------------
+#
+# Два окремі звіти замість одного зведення: харчування о 09:40 (його чекає
+# кухня), відсутні о 09:50. Тіло в них спільне, тож більшість перевірок
+# ганяємо по обох одразу.
 
 
-async def test_digest_goes_only_to_admins(bot, maker, school):
+REPORTS = [jobs.meals_report, jobs.absence_report]
+
+
+@pytest.mark.parametrize("job", REPORTS)
+async def test_report_goes_only_to_admins(bot, maker, school, job):
+    async with maker() as s:
+        await upsert_entry(
+            s, class_id=school["classes"][0], d=MONDAY, eating_count=24,
+            absent_count=2, teacher_id=school["maria"],
+        )
+        await s.commit()
+
+    assert await job(bot, maker, MONDAY) == 1
+    assert bot.to(1001) == []          # вчителю звіти не йдуть
+    assert bot.to(2002)
+
+
+async def test_meals_report_names_the_classes_that_did_not_submit(bot, maker, school):
     async with maker() as s:
         await upsert_entry(
             s, class_id=school["classes"][0], d=MONDAY, eating_count=24,
@@ -122,158 +145,158 @@ async def test_digest_goes_only_to_admins(bot, maker, school):
         )
         await s.commit()
 
-    assert await jobs.admin_digest(bot, maker, MONDAY) == 1
-    assert bot.to(1001) == []
+    await jobs.meals_report(bot, maker, MONDAY)
     text = bot.to(2002)[0].text
-    assert "Подали: <b>1</b> з 3" in text
     assert "3-Б" in text and "5-В" in text
 
 
-async def test_digest_reports_total(bot, maker, school):
+async def test_absence_report_shows_absent_and_sick(bot, maker, school):
     async with maker() as s:
-        for class_id, n in zip(school["classes"], (24, 18, 20), strict=True):
-            await upsert_entry(
-                s, class_id=class_id, d=MONDAY, eating_count=n, teacher_id=school["maria"]
-            )
+        await upsert_entry(
+            s, class_id=school["classes"][0], d=MONDAY, eating_count=24,
+            absent_count=3, sick_count=1, teacher_id=school["maria"],
+        )
         await s.commit()
 
-    await jobs.admin_digest(bot, maker, MONDAY)
+    await jobs.absence_report(bot, maker, MONDAY)
     text = bot.to(2002)[0].text
-    assert "62" in text
-    assert "Усі класи подали дані" in text
-    assert bot.to(2002)[0].markup is None      # немає боржників — немає кнопок
+    assert "Відсутніх" in text and "3" in text
 
 
-async def test_digest_offers_buttons_for_missing_classes(bot, maker, school):
-    await jobs.admin_digest(bot, maker, MONDAY)
-    kb = bot.to(2002)[0].markup
-    labels = [b.text for row in kb.inline_keyboard for b in row]
-    assert labels == ["1-А", "3-Б", "5-В"]
+@pytest.mark.parametrize(
+    "job,fname",
+    [(jobs.meals_report, "harchuvannia_2026-09-07.pdf"),
+     (jobs.absence_report, "vidsutni_2026-09-07.pdf")],
+)
+async def test_each_report_attaches_its_own_file(bot, maker, school, job, fname):
+    await job(bot, maker, MONDAY)
+    assert [d.filename for d in bot.docs_to(2002)] == [fname]
+    assert bot.docs_to(1001) == []
 
 
-async def test_digest_attaches_the_day_pdf(bot, maker, school):
-    """Зведення о 09:35 приходить разом із PDF за той самий день."""
-    await jobs.admin_digest(bot, maker, MONDAY)
+@pytest.mark.parametrize("job", REPORTS)
+async def test_report_survives_a_failing_render(bot, maker, school, monkeypatch, job):
+    """Збій рендеру коштує файл, а не весь джоб."""
+    def boom(report, kind):
+        raise RuntimeError("ReportLab не зміг")
 
-    docs = bot.docs_to(2002)
-    assert [d.filename for d in docs] == ["harchuvannia_2026-09-07.pdf"]
-    assert bot.docs_to(1001) == []      # вчителю звіт не йде
+    monkeypatch.setattr(jobs, "render_day_report", boom)
+
+    assert await job(bot, maker, MONDAY) == 1
+    assert bot.to(2002)[0].text          # текст усе одно дійшов
+    assert bot.documents == []
 
 
-async def test_digest_survives_a_failing_pdf_send(maker, school):
-    """Файл не дійшов — зведення все одно вважається виконаним.
-
-    Головні цифри вже в тексті; якщо через збій на файлі джоб лишався б
-    непозначеним, наступний старт розіслав би зведення вдруге.
-    """
+@pytest.mark.parametrize("job", REPORTS)
+async def test_report_survives_a_failing_send(maker, school, job):
     class NoDocumentsBot(FakeBot):
         async def send_document(self, chat_id, document, **kwargs):
             raise RuntimeError("Telegram відмовив")
 
     bot = NoDocumentsBot()
-    assert await jobs.admin_digest(bot, maker, MONDAY) == 1
+    assert await job(bot, maker, MONDAY) == 1
     assert bot.to(2002)[0].text
 
-    async with maker() as s:
-        assert await jobs.has_run(s, "digest", MONDAY)
 
-
-async def test_digest_survives_a_failing_pdf_render(bot, maker, school, monkeypatch):
-    """Збій рендеру коштує файл, а не все зведення.
-
-    До появи PDF текстове зведення від нього не залежало взагалі. Якщо виняток
-    з ReportLab вилетить до розсилки, адміни того дня не отримають нічого —
-    саме цього й не має статися.
-    """
-    def boom(report):
-        raise RuntimeError("ReportLab не зміг")
-
-    monkeypatch.setattr(jobs, "render_day_pdf", boom)
-
-    assert await jobs.admin_digest(bot, maker, MONDAY) == 1
-    assert "Подали:" in bot.to(2002)[0].text     # текст усе одно дійшов
-    assert bot.documents == []                   # а файла просто немає
+async def test_reports_are_marked_separately(bot, maker, school):
+    """Два джоби — два маркери, інакше догоняння пропустило б один зі звітів."""
+    await jobs.meals_report(bot, maker, MONDAY)
 
     async with maker() as s:
-        assert await jobs.has_run(s, "digest", MONDAY)
+        assert await jobs.has_run(s, "report:meals", MONDAY)
+        assert not await jobs.has_run(s, "report:absence", MONDAY)
+
+    await jobs.absence_report(bot, maker, MONDAY)
+    async with maker() as s:
+        assert await jobs.has_run(s, "report:absence", MONDAY)
 
 
-async def test_digest_reads_the_day_only_once(bot, maker, school, monkeypatch):
-    """Текст і вкладення будуються з одного знімка даних.
-
-    Два окремі запити до БД лишали вікно: вчитель встигає надіслати цифру між
-    ними, і повідомлення та файл за той самий день показують різні числа.
-    """
-    from school_bot.reports import day as day_report
-
-    calls: list[object] = []
-    real = jobs.day_summary
-
-    async def counting(session, d):
-        summary = await real(session, d)
-        calls.append(summary)
-        return summary
-
-    # Обидва модулі імпортували day_summary поіменно, тож рахувати треба в
-    # кожному: підміна лише в одному пропустила б звернення з іншого.
-    monkeypatch.setattr(jobs, "day_summary", counting)
-    monkeypatch.setattr(day_report, "day_summary", counting)
-
-    await jobs.admin_digest(bot, maker, MONDAY)
-
-    assert len(calls) == 1, "день має читатися рівно раз на зведення"
-    assert bot.docs_to(2002)                     # і файл усе одно надіслано
+async def test_both_reports_are_in_the_daily_plan():
+    keys = [k for k, _, _ in jobs.daily_plan()]
+    assert "report:meals" in keys and "report:absence" in keys
+    times = {k: t for k, t, _ in jobs.daily_plan()}
+    assert times["report:meals"] < times["report:absence"]
 
 
-async def test_digest_emails_the_same_pdf_it_sends_to_telegram(bot, maker, school, monkeypatch):
-    """Один рендер на обидва канали — інакше вони можуть розійтися."""
+async def test_reports_email_their_own_kind(bot, maker, school, monkeypatch):
+    """Кожен звіт іде поштою під своїм видом, а не обидва як харчування."""
     from school_bot.reports import mailer
+    from school_bot.reports.day import ReportKind
 
-    posted: list[tuple] = []
+    posted: list = []
 
-    async def fake_send(report, pdf):
-        posted.append((report, pdf))
+    async def fake_send(report, pdf, *, kind=ReportKind.MEALS):
+        posted.append(kind)
         return True
 
     monkeypatch.setattr(mailer, "safe_send_day_report", fake_send)
-    await jobs.admin_digest(bot, maker, MONDAY)
+    await jobs.meals_report(bot, maker, MONDAY)
+    await jobs.absence_report(bot, maker, MONDAY)
 
-    assert len(posted) == 1
-    report, pdf = posted[0]
-    assert report.date == MONDAY
-    assert pdf.startswith(b"%PDF")
+    assert posted == [ReportKind.MEALS, ReportKind.ABSENCE]
 
 
-async def test_digest_survives_a_dead_smtp(bot, maker, school, monkeypatch):
-    """Недоступна пошта не має забирати з собою зведення в Telegram.
-
-    Канал увімкнено, але сервер не відповідає — саме той стан, у якому опиниться
-    прод, якщо Gmail відхилить пароль або впаде мережа.
-    """
-    from school_bot.reports import mailer
-
-    def dead(msg):
-        raise OSError("SMTP недоступний")
-
-    monkeypatch.setattr(mailer.settings, "smtp_user", "bot@school.ua")
-    monkeypatch.setattr(mailer.settings, "smtp_password", "p")
-    monkeypatch.setattr(mailer.settings, "report_emails", ["dyrektor@school.ua"])
-    monkeypatch.setattr(mailer, "_send_sync", dead)
-
-    assert await jobs.admin_digest(bot, maker, MONDAY) == 1
-    assert bot.to(2002)[0].text      # текст дійшов
-    assert bot.docs_to(2002)         # і файл у Telegram теж
-
-    async with maker() as s:
-        assert await jobs.has_run(s, "digest", MONDAY)
-
-
-async def test_digest_does_not_email_when_channel_is_off(bot, maker, school):
-    """У тестах SMTP не налаштований — і жодних спроб надсилати немає."""
+async def test_reports_do_not_email_when_channel_is_off(bot, maker, school):
     from school_bot.config import settings
 
     assert not settings.email_enabled
-    assert await jobs.admin_digest(bot, maker, MONDAY) == 1
+    assert await jobs.meals_report(bot, maker, MONDAY) == 1
+
+
+async def test_one_broken_render_does_not_lose_the_other_report(maker, school, monkeypatch):
+    """Кнопка «Сьогодні»: зламаний звіт має коштувати свій файл, а не обидва.
+
+    Знайдено на рев'ю PR #13 — обидва рендери стояли під одним try/except,
+    тож збій другого забирав з собою вже готовий перший.
+    """
+    from school_bot.domain.meals import day_summary
+    from school_bot.reports.day import ReportKind
+
+    real = jobs.render_day_report
+
+    def half_broken(report, kind):
+        if kind is ReportKind.ABSENCE:
+            raise RuntimeError("ReportLab не зміг")
+        return real(report, kind)
+
+    monkeypatch.setattr(jobs, "render_day_report", half_broken)
+
+    async with maker() as s:
+        summary = await day_summary(s, MONDAY)
+    docs = jobs.day_report_attachments(summary)
+
+    assert [d.filename for d in docs] == ["harchuvannia_2026-09-07.pdf"]
+
+
+async def test_report_tells_admins_when_there_are_no_classes(bot, maker, school):
+    """Жодного активного класу — це помилка налаштування, і її має бути видно."""
+    from sqlalchemy import update
+
+    from school_bot.db.models import SchoolClass
+
+    async with maker() as s:
+        await s.execute(update(SchoolClass).values(is_active=False))
+        await s.commit()
+
+    assert await jobs.meals_report(bot, maker, MONDAY) == 0
+    assert bot.to(2002), "адмін мав отримати попередження, а не тишу"
+
+    async with maker() as s:
+        assert await jobs.has_run(s, "report:meals", MONDAY)
+
+
+async def test_absence_report_also_names_missing_classes(bot, maker, school):
+    """Медсестра має бачити, що дані неповні, а не лише підсумкову цифру."""
+    async with maker() as s:
+        await upsert_entry(
+            s, class_id=school["classes"][0], d=MONDAY, eating_count=24,
+            absent_count=2, sick_count=1, teacher_id=school["maria"],
+        )
+        await s.commit()
+
+    await jobs.absence_report(bot, maker, MONDAY)
+    text = bot.to(2002)[0].text
+    assert "Не подали" in text and "3-Б" in text
 
 
 # --- стійкість ------------------------------------------------------------

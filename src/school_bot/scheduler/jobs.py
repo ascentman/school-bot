@@ -35,9 +35,13 @@ from school_bot.domain.meals import (
     primary_teacher_ids,
 )
 from school_bot.reports import mailer, sheets
-from school_bot.reports.day import DayReport, build_report, day_report_filename
+from school_bot.reports.day import (
+    ReportKind,
+    build_report,
+    day_report_filename,
+)
 from school_bot.reports.matrix import available_months, build_month_matrices
-from school_bot.reports.pdf import render_day_pdf
+from school_bot.reports.pdf import render_day_report
 
 log = logging.getLogger(__name__)
 
@@ -148,36 +152,36 @@ async def _send_document(bot: Bot, chat_id: int, document: BufferedInputFile) ->
         return False
 
 
-def day_pdf(summary: DaySummary) -> tuple[DayReport, bytes] | None:
-    """Звіт за день і його PDF, або None, якщо побудувати не вдалося.
+def day_report_attachments(summary: DaySummary) -> list[BufferedInputFile]:
+    """Обидва щоденні звіти як вкладення Telegram.
 
-    Рендер не має права зірвати зведення: до появи PDF текстове зведення від
-    нього не залежало взагалі, і воно ж несе головні цифри. Виняток із ReportLab
-    інакше вилетів би ще до першої розсилки — і того дня адміни не отримали б
-    нічого, замість «текст без файлу».
-
-    Повертає і звіт, і байти: той самий PDF іде у Telegram і в лист, а звіт
-    потрібен для теми й тіла листа. Будувати його двічі — зайвий шанс розійтися.
+    Кожен рендериться окремо: збій одного має коштувати саме той файл, а не
+    обидва. Інакше зламаний звіт про відсутніх забирав би з собою вже готовий
+    звіт про харчування — а його чекає кухня.
     """
     if not summary.statuses:
-        return None
+        return []
+
     try:
         report = build_report(
             summary, school_name=settings.school_name, slots=settings.meal_slots
         )
-        return report, render_day_pdf(report)
     except Exception:
-        log.exception("Не вдалося побудувати PDF за %s — надішлю саме зведення", summary.date)
-        return None
+        log.exception("Не вдалося зібрати звіт за %s", summary.date)
+        return []
 
-
-def day_pdf_attachment(summary: DaySummary) -> BufferedInputFile | None:
-    """PDF за день як вкладення Telegram."""
-    built = day_pdf(summary)
-    if built is None:
-        return None
-    report, pdf = built
-    return BufferedInputFile(pdf, filename=day_report_filename(report.date))
+    documents: list[BufferedInputFile] = []
+    for kind in (ReportKind.MEALS, ReportKind.ABSENCE):
+        try:
+            documents.append(
+                BufferedInputFile(
+                    render_day_report(report, kind),
+                    filename=day_report_filename(summary.date, kind),
+                )
+            )
+        except Exception:
+            log.exception("Не вдалося намалювати звіт %s за %s", kind.value, summary.date)
+    return documents
 
 
 async def _admin_chat_ids(session: AsyncSession) -> list[int]:
@@ -302,59 +306,97 @@ async def remind(
     return sent
 
 
-async def admin_digest(
+async def _day_report_job(
     bot: Bot,
     maker: async_sessionmaker[AsyncSession],
-    d: Date | None = None,
+    d: Date | None,
+    kind: ReportKind,
     *,
     force: bool = False,
 ) -> int:
-    """Зведення адмінам: скільки подали, скільки всього, хто не подав."""
+    """Спільне тіло обох щоденних звітів.
+
+    Різниця між ними лише в тому, які цифри друкуються й о котрій вони йдуть,
+    тож розсилка, обробка збоїв і журнал запусків спільні.
+    """
     d = d or today()
     sent = attempted = 0
+    job_key = f"report:{kind.value}"
 
     async with maker() as session:
         if not force and not await is_school_day(session, d):
             return 0
 
         summary = await day_summary(session, d)
-        missing = [(s.school_class.id, s.school_class.name) for s in summary.missing]
-        text = texts.digest(
-            d,
-            submitted=len(summary.submitted),
-            expected=summary.expected,
-            total=summary.total,
-            missing=[name for _, name in missing],
-        )
-        markup = keyboards.missing_classes(d, missing) if missing else None
+        if not summary.statuses:
+            # Мовчати тут не можна: жодного активного класу — це не «нема
+            # роботи», а помилка налаштування, і побачити її має людина,
+            # а не лише лог. Маркер ставимо, щоб не слати те саме щостарту.
+            log.warning("%s: немає активних класів, звіт не будую", d)
+            for chat_id in await _admin_chat_ids(session):
+                await _send(bot, chat_id, texts.NO_ACTIVE_CLASSES)
+            await mark_run(session, job_key, d)
+            await session.commit()
+            return 0
 
-        # Із того самого summary, що й текст вище: інакше цифри в повідомленні
-        # й у файлі за один день можуть розійтися.
-        built = day_pdf(summary)
+        report = build_report(
+            summary, school_name=settings.school_name, slots=settings.meal_slots
+        )
+        try:
+            pdf = render_day_report(report, kind)
+        except Exception:
+            # Збій рендеру коштує звіт, а не джоб: інакше він лишився б
+            # непозначеним і наступний старт розіслав би все вдруге.
+            log.exception("Не вдалося побудувати звіт %s за %s", kind.value, d)
+            pdf = None
+
+        text = texts.report_ready(kind, report)
         document = (
-            BufferedInputFile(built[1], filename=day_report_filename(d))
-            if built is not None
+            BufferedInputFile(pdf, filename=day_report_filename(d, kind))
+            if pdf is not None
             else None
         )
 
         for chat_id in await _admin_chat_ids(session):
             attempted += 1
-            if await _send(bot, chat_id, text, reply_markup=markup):
+            if await _send(bot, chat_id, text):
                 sent += 1
                 if document is not None:
                     await _send_document(bot, chat_id, document)
 
         # Пошта — після Telegram і байдужа до його результату: у адміністратора
         # бот міг бути заблокований, а директор усе одно чекає лист.
-        if built is not None:
-            await mailer.safe_send_day_report(*built)
+        if pdf is not None:
+            await mailer.safe_send_day_report(report, pdf, kind=kind)
 
         if _should_mark(attempted, sent):
-            await mark_run(session, "digest", d)
+            await mark_run(session, job_key, d)
         await session.commit()
 
-    log.info("Зведення за %s: надіслано %s з %s", d, sent, attempted)
+    log.info("Звіт %s за %s: надіслано %s з %s", kind.value, d, sent, attempted)
     return sent
+
+
+async def meals_report(
+    bot: Bot,
+    maker: async_sessionmaker[AsyncSession],
+    d: Date | None = None,
+    *,
+    force: bool = False,
+) -> int:
+    """Звіт про харчування — той, що йде на кухню."""
+    return await _day_report_job(bot, maker, d, ReportKind.MEALS, force=force)
+
+
+async def absence_report(
+    bot: Bot,
+    maker: async_sessionmaker[AsyncSession],
+    d: Date | None = None,
+    *,
+    force: bool = False,
+) -> int:
+    """Звіт про відсутніх і хворих — той, що йде медсестрі."""
+    return await _day_report_job(bot, maker, d, ReportKind.ABSENCE, force=force)
 
 
 async def sync_all_months(session: AsyncSession, limit: int = 12) -> tuple[int, int]:
@@ -441,7 +483,8 @@ def daily_plan() -> list[tuple[str, Time, DailyJob]]:
 
         plan.append((f"remind:{slot}", t, run))
 
-    plan.append(("digest", settings.digest_time, admin_digest))
+    plan.append(("report:meals", settings.meals_report_time, meals_report))
+    plan.append(("report:absence", settings.absence_report_time, absence_report))
     return plan
 
 

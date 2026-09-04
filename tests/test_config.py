@@ -49,14 +49,17 @@ def test_every_settings_attribute_exists():
 def test_defaults_match_agreed_schedule():
     assert settings.prompt_time == time(9, 5)
     assert settings.remind_times == [time(9, 15), time(9, 30)]
-    assert settings.digest_time == time(9, 35)
+    assert settings.meals_report_time == time(9, 40)
+    assert settings.absence_report_time == time(9, 50)
 
 
 def test_schedule_is_chronological():
-    """Нагадування мають іти після запиту, зведення — після нагадувань."""
+    """Нагадування — після запиту, звіти — після нагадувань і в правильному порядку."""
     assert all(t > settings.prompt_time for t in settings.remind_times)
-    assert settings.digest_time >= max(settings.remind_times)
-    assert settings.catch_up_deadline > settings.digest_time
+    assert settings.meals_report_time >= max(settings.remind_times)
+    # Харчування раніше за відсутніх: його чекає кухня, і воно найтерміновіше.
+    assert settings.absence_report_time > settings.meals_report_time
+    assert settings.catch_up_deadline > settings.absence_report_time
 
 
 def test_remind_times_parsed_from_env_string():

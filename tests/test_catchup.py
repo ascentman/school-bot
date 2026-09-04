@@ -60,7 +60,10 @@ async def test_catches_everything_after_long_blackout(bot, maker, school, at):
     """Світло зникло зранку і зʼявилося об 11:00 — догнати всі чотири розсилки."""
     at(11, 0)
     result = await jobs.catch_up(bot, maker)
-    assert result == {"prompt": 3, "remind:09:15": 3, "remind:09:30": 3, "digest": 1}
+    assert result == {
+        "prompt": 3, "remind:09:15": 3, "remind:09:30": 3,
+        "report:meals": 1, "report:absence": 1,
+    }
 
 
 async def test_partial_catch_up(bot, maker, school, at):
@@ -78,7 +81,9 @@ async def test_skips_jobs_that_already_ran(bot, maker, school, at):
     at(11, 0)
     result = await jobs.catch_up(bot, maker)
     assert "prompt" not in result
-    assert set(result) == {"remind:09:15", "remind:09:30", "digest"}
+    assert set(result) == {
+        "remind:09:15", "remind:09:30", "report:meals", "report:absence",
+    }
 
 
 async def test_silent_on_weekend(bot, maker, school, at):

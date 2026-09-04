@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from io import BytesIO
 
 from reportlab.lib import colors
@@ -18,10 +19,13 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+from reportlab.platypus.doctemplate import LayoutError
 
-from school_bot.domain.dates import format_date, plural_children
-from school_bot.reports.day import DayReport
+from school_bot.domain.dates import format_date
+from school_bot.reports.day import UA_REPORT_KIND, DayReport, ReportKind
 from school_bot.reports.matrix import MonthMatrix
+
+log = logging.getLogger(__name__)
 
 # Кирилиця: вбудовані шрифти reportlab її не мають, тому шукаємо системний.
 # Жирне накреслення йде парою до звичайного: підмішувати жирний з іншої
@@ -191,110 +195,237 @@ def render_pdf(*matrices: MonthMatrix) -> bytes:
     return buf.getvalue()
 
 
-def render_day_pdf(report: DayReport) -> bytes:
-    """Звіт за один день: дата, загальна цифра, класи по змінах роздачі.
+# Великий звіт читає людина старшого віку, часто роздрукований і без окулярів
+# під рукою. Тому кегль удвічі більший за компактний варіант, а межі між
+# класами — суцільні лінії, а не відтінки: на ксероксі відтінки зникають.
+# Щоденні звіти друкують і читають зблизька, часто люди старшого віку. Тому
+# правило одне для обох: рівно один аркуш А4 і найбільший кегль, який на ньому
+# вміщається. Дві колонки поруч — бо 35 рядків в одну таким шрифтом не лягають.
+ONE_PAGE_MAX_FONT = 26
+ONE_PAGE_MIN_FONT = 8
+# Шапку читають один раз, тож вона не має тягнути вниз кегль усієї таблиці:
+# «Харч.» у вузькій колонці інакше обмежував би цифри, заради яких усе й є.
+HEADER_FONT_CAP = 13
 
-    Порядок рядків повторює порядок роздачі, а не алфавіт: саме так звіт
-    читають на місці — зміна за зміною, звіряючи з тим, що на роздачі.
-    """
-    font = _cyrillic_font()
-    bold = _bold_font()
-    buf = BytesIO()
-    day_title = f"{format_date(report.date, with_weekday=True)} {report.date.year} р."
-    doc = SimpleDocTemplate(
+PAGE_MARGIN = 14 * mm
+USABLE_WIDTH = A4[0] - 2 * PAGE_MARGIN      # 182 мм
+COLUMN_GAP = 2 * mm                          # проміжок між двома половинами
+HALF_WIDTH = (USABLE_WIDTH - 2 * COLUMN_GAP) / 2
+
+# Ширини комірок у половині аркуша: (підпис, значення…). Сума кожного набору
+# має вкладатися в HALF_WIDTH — інакше таблиця мовчки наїде на поля: reportlab
+# падає лише по висоті, а надто широку просто центрує поверх берегів.
+KIND_COLUMNS: dict[ReportKind, tuple[list[str], list[float]]] = {
+    ReportKind.MEALS: (["Клас", "Харч."], [64 * mm, 24 * mm]),
+    ReportKind.ABSENCE: (["Клас", "Відс.", "Хворі"], [46 * mm, 21 * mm, 21 * mm]),
+}
+
+
+def _big_doc(buf: BytesIO, title: str) -> SimpleDocTemplate:
+    return SimpleDocTemplate(
         buf,
         pagesize=A4,
-        leftMargin=18 * mm,
-        rightMargin=18 * mm,
-        topMargin=15 * mm,
-        bottomMargin=15 * mm,
-        title=f"Облік харчування — {day_title}",
+        leftMargin=PAGE_MARGIN,
+        rightMargin=PAGE_MARGIN,
+        topMargin=12 * mm,
+        bottomMargin=12 * mm,
+        title=title,
     )
 
-    title_style = ParagraphStyle("dt", fontName=bold, fontSize=15, alignment=1, spaceAfter=9)
-    sub_style = ParagraphStyle(
-        "ds", fontName=font, fontSize=10.5, alignment=1, spaceAfter=11,
-        textColor=colors.HexColor("#555555"),
-    )
-    date_style = ParagraphStyle("dd", fontName=bold, fontSize=12, alignment=1, spaceAfter=3)
-    total_style = ParagraphStyle("dtot", fontName=font, fontSize=12, alignment=1, spaceAfter=10)
-    note_style = ParagraphStyle("dn", fontName=font, fontSize=9, spaceBefore=8)
-    foot_style = ParagraphStyle("df", fontName=font, fontSize=9, spaceBefore=14)
 
-    story = [Paragraph("Облік харчування учнів", title_style)]
-    if report.school_name:
-        story.append(Paragraph(report.school_name, sub_style))
-    story.append(Paragraph(day_title, date_style))
-    story.append(
-        Paragraph(f"Разом на харчуванні: <b>{plural_children(report.total)}</b>", total_style)
-    )
+def _dash(v: int | None) -> str:
+    return "—" if v is None else str(v)
 
-    def cell(v: int | None) -> str:
-        return "—" if v is None else str(v)
 
-    data: list[list[str]] = [["Клас", "Харчуються", "Відсутні", "З них хворі"]]
-    # Рядки-заголовки змін фарбуються окремо від рядків класів, тому їхні
-    # номери запамʼятовуємо просто під час збирання таблиці.
-    group_rows: list[int] = []
+def _report_rows(report: DayReport, kind: ReportKind) -> list[tuple[list[str], bool]]:
+    """Плаский список рядків: (комірки, чи це заголовок зміни)."""
+    meals = kind is ReportKind.MEALS
+    rows: list[tuple[list[str], bool]] = []
     for group in report.groups:
         if group.label:
-            group_rows.append(len(data))
-            # Зміна без жодної поданої цифри — це не нуль порцій, а брак даних.
-            data.append([
-                group.label,
-                str(group.total) if group.has_data else "—",
-                cell(group.absent_total),
-                cell(group.sick_total),
-            ])
+            if meals:
+                cells = [group.label, str(group.total) if group.has_data else "—"]
+            else:
+                cells = [group.label, _dash(group.absent_total), _dash(group.sick_total)]
+            rows.append((cells, True))
         for c in group.cells:
-            data.append([c.name, cell(c.count), cell(c.absent), cell(c.sick)])
-    data.append([
-        "РАЗОМ",
-        str(report.total),
-        cell(report.absent_total),
-        cell(report.sick_total),
-    ])
+            if meals:
+                cells = [c.name, _dash(c.count)]
+            else:
+                cells = [c.name, _dash(c.absent), _dash(c.sick)]
+            rows.append((cells, False))
+    return rows
 
-    table = Table(
-        data, colWidths=[62 * mm, 28 * mm, 28 * mm, 28 * mm], repeatRows=1, hAlign="CENTER"
-    )
+
+def _split_in_two(
+    rows: list[tuple[list[str], bool]],
+) -> tuple[list[tuple[list[str], bool]], list[tuple[list[str], bool]]]:
+    """Розрізати список навпіл, але тільки по межі зміни.
+
+    Розрив усередині зміни означав би, що частина класів однієї роздачі
+    опинилася в іншій колонці — саме те, чого шукає око на аркуші.
+    """
+    middle = (len(rows) + 1) // 2
+    candidates = [i for i, (_, is_group) in enumerate(rows) if is_group and i > 0]
+    if candidates:
+        cut = min(candidates, key=lambda i: abs(i - middle))
+        return rows[:cut], rows[cut:]
+
+    # Межі немає — уся школа в одній зміні (MEAL_SLOTS з одним інтервалом) або
+    # розкладу немає взагалі. Ріжемо посередині, але повторюємо заголовок
+    # зверху другої колонки: інакше половина класів висіла б без підпису.
+    left, right = rows[:middle], rows[middle:]
+    header = next((cells for cells, is_group in rows if is_group), None)
+    if header is not None and right:
+        right = [(header, True), *right]
+    return left, right
+
+
+def _fits_width(
+    rows: list[tuple[list[str], bool]],
+    headers: list[str],
+    widths: list[float],
+    font: str,
+    bold: str,
+    size: float,
+) -> bool:
+    """Чи вміщається кожна комірка у свою колонку.
+
+    Міряти доводиться самим: reportlab не переносить і не стискає текст у
+    комірці — задовгий підпис просто виповзає за рамку, і сторінок при цьому
+    не більшає. Тобто переповнення по ширині не видно ні звідки, крім оцього.
+    """
+    checks = [(headers, bold, min(size, HEADER_FONT_CAP))]
+    checks += [(cells, bold if is_group else font, size) for cells, is_group in rows]
+    for cells, face, cell_size in checks:
+        for text, width in zip(cells, widths, strict=True):
+            if pdfmetrics.stringWidth(text, face, cell_size) > width - 12:
+                return False
+    return True
+
+
+def _best_font(
+    rows: list[tuple[list[str], bool]],
+    headers: list[str],
+    widths: list[float],
+    font: str,
+    bold: str,
+) -> float:
+    size = ONE_PAGE_MAX_FONT
+    while size > ONE_PAGE_MIN_FONT and not _fits_width(
+        rows, headers, widths, font, bold, size
+    ):
+        size -= 0.5
+    return size
+
+
+def _half_table(
+    rows: list[tuple[list[str], bool]],
+    headers: list[str],
+    widths: list[float],
+    font: str,
+    bold: str,
+    size: float,
+) -> Table:
+    """Одна з двох колонок аркуша."""
+    data = [headers] + [cells for cells, _ in rows]
+    table = Table(data, colWidths=widths, repeatRows=1)
     style = [
         ("FONTNAME", (0, 0), (-1, -1), font),
         ("FONTNAME", (0, 0), (-1, 0), bold),
-        ("FONTNAME", (0, -1), (-1, -1), bold),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("FONTSIZE", (0, 0), (-1, -1), size),
+        ("FONTSIZE", (0, 0), (-1, 0), min(size, HEADER_FONT_CAP)),
+        # Без явного leading reportlab лишає висоту рядка від стилю за
+        # замовчуванням, і при великому кеглі текст налазить сам на себе.
+        ("LEADING", (0, 0), (-1, -1), size * 1.15),
         ("ALIGN", (1, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#B0B0B0")),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DDE5F0")),
-        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#E8F0E4")),
-        # Класи — з відступом, щоб зміна читалася як заголовок над ними.
-        ("LEFTPADDING", (0, 1), (0, -1), 16),
-        # Щільно свідомо: школа на 25 класів має вміщатися на одну сторінку —
-        # підписують і підшивають саме аркуш, а не два.
-        ("TOPPADDING", (0, 0), (-1, -1), 1.5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+        # Суцільні межі, а не відтінки: на ксероксі відтінки зникають.
+        ("GRID", (0, 0), (-1, -1), 0.9, colors.HexColor("#333333")),
+        ("BOX", (0, 0), (-1, -1), 1.6, colors.black),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D6E0EE")),
+        ("LEFTPADDING", (0, 0), (0, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 3.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
     ]
-    for r in group_rows:
-        style += [
-            ("BACKGROUND", (0, r), (-1, r), colors.HexColor("#EDF1F7")),
-            ("FONTNAME", (0, r), (-1, r), bold),
-            ("LEFTPADDING", (0, r), (0, r), 6),
-            ("LINEABOVE", (0, r), (-1, r), 0.6, colors.HexColor("#8A9BB4")),
-        ]
+    for i, (_, is_group) in enumerate(rows, start=1):
+        if is_group:
+            style += [
+                ("BACKGROUND", (0, i), (-1, i), colors.HexColor("#E4EBF5")),
+                ("FONTNAME", (0, i), (-1, i), bold),
+                ("LINEABOVE", (0, i), (-1, i), 1.8, colors.black),
+            ]
     table.setStyle(TableStyle(style))
-    story.append(table)
+    return table
 
-    # Пропуск і нуль — різні речі: «—» означає, що клас не подав цифру, і в
-    # сумі його немає. Без цього рядка звіт виглядав би повним.
-    if report.missing:
+
+def _draw_one_page(report: DayReport, kind: ReportKind, size: float) -> bytes:
+    font = _cyrillic_font()
+    bold = _bold_font()
+    headers, widths = KIND_COLUMNS[kind]
+    meals = kind is ReportKind.MEALS
+    heading = UA_REPORT_KIND[kind]
+    buf = BytesIO()
+    day_title = f"{format_date(report.date, with_weekday=True)} {report.date.year} р."
+    doc = _big_doc(buf, f"{heading} — {day_title}")
+
+    title_style = ParagraphStyle(
+        "ot", fontName=bold, fontSize=20, alignment=1, spaceAfter=2, leading=24
+    )
+    sub_style = ParagraphStyle(
+        "os", fontName=font, fontSize=11, alignment=1, spaceAfter=6,
+        textColor=colors.HexColor("#444444"),
+    )
+    total_style = ParagraphStyle(
+        "ox", fontName=bold, fontSize=17, alignment=1, spaceAfter=8, leading=21
+    )
+    note_style = ParagraphStyle("on", fontName=font, fontSize=10, spaceBefore=6)
+    foot_style = ParagraphStyle("of", fontName=font, fontSize=10, spaceBefore=10)
+
+    story = [Paragraph(heading, title_style)]
+    if report.school_name:
+        story.append(Paragraph(f"{report.school_name} · {day_title}", sub_style))
+    if meals:
+        story.append(Paragraph(f"РАЗОМ: {report.total}", total_style))
+    else:
         story.append(
             Paragraph(
-                f"Не подали дані ({len(report.missing)}): " + ", ".join(report.missing),
-                note_style,
+                f"ВІДСУТНІХ: {_dash(report.absent_total)}"
+                f" · З НИХ ХВОРІ: {_dash(report.sick_total)}",
+                total_style,
             )
         )
 
+    left, right = _split_in_two(_report_rows(report, kind))
+    # Проміжок додається до кожної половини рівно один раз, і сума не має
+    # перевищувати USABLE_WIDTH — це стереже тест test_table_fits_the_page.
+    columns = Table(
+        [[
+            _half_table(left, headers, widths, font, bold, size),
+            _half_table(right, headers, widths, font, bold, size),
+        ]],
+        colWidths=[HALF_WIDTH + COLUMN_GAP, HALF_WIDTH + COLUMN_GAP],
+        hAlign="CENTER",
+    )
+    columns.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    story.append(columns)
+
+    # Виноска потрібна обом звітам: для відсутніх вона навіть важливіша —
+    # клас, що не подав нічого, не входить у суму, тож «Відсутніх: 15» без
+    # цього рядка виглядало б повною цифрою, а насправді може бути більшою.
+    if report.missing:
+        story.append(
+            Paragraph(
+                f"Не подали ({len(report.missing)}): " + ", ".join(report.missing),
+                note_style,
+            )
+        )
     story.append(
         Paragraph("Відповідальна особа: ______________________&nbsp;&nbsp;&nbsp;&nbsp;"
                   "Дата: ______________", foot_style)
@@ -302,3 +433,74 @@ def render_day_pdf(report: DayReport) -> bytes:
 
     doc.build(story)
     return buf.getvalue()
+
+
+def _draw_flowing(report: DayReport, kind: ReportKind, size: float) -> bytes:
+    """Запасний рендер для дуже великої школи: одна колонка, кілька сторінок.
+
+    Дві колонки — нерозривний блок, і коли він вищий за аркуш, reportlab не
+    ділить його, а падає. Звичайна одноколонкова таблиця ділиться штатно, тож
+    надто велика школа отримає багатосторінковий звіт замість жодного.
+    """
+    font = _cyrillic_font()
+    bold = _bold_font()
+    headers, widths = KIND_COLUMNS[kind]
+    heading = UA_REPORT_KIND[kind]
+    buf = BytesIO()
+    day_title = f"{format_date(report.date, with_weekday=True)} {report.date.year} р."
+    doc = _big_doc(buf, f"{heading} — {day_title}")
+
+    title_style = ParagraphStyle(
+        "ft", fontName=bold, fontSize=20, alignment=1, spaceAfter=2, leading=24
+    )
+    sub_style = ParagraphStyle(
+        "fs", fontName=font, fontSize=11, alignment=1, spaceAfter=8,
+        textColor=colors.HexColor("#444444"),
+    )
+    story = [
+        Paragraph(heading, title_style),
+        Paragraph(f"{report.school_name} · {day_title}", sub_style),
+        _half_table(_report_rows(report, kind), headers, widths, font, bold, size),
+    ]
+    doc.build(story)
+    return buf.getvalue()
+
+
+def render_day_report(report: DayReport, kind: ReportKind) -> bytes:
+    """Щоденний звіт: один аркуш А4 і найбільший кегль, який на ньому вміщається.
+
+    Ширину перевіряємо самі, а висоту — єдиним надійним способом: будуємо
+    документ і дивимося, скільки вийшло сторінок. Тому кегль спускаємо, поки
+    не влізе; більша школа отримує менший шрифт, а не другу сторінку — її
+    просто не понесуть на роздачу.
+
+    Межа все ж існує: приблизно від ста класів на аркуш не лягає навіть
+    найдрібніший кегль. Там звіт друкується в кілька сторінок — це гірше, але
+    незрівнянно краще, ніж не отримати його взагалі.
+    """
+    font = _cyrillic_font()
+    bold = _bold_font()
+    headers, widths = KIND_COLUMNS[kind]
+    rows = _report_rows(report, kind)
+    size = _best_font(rows, headers, widths, font, bold)
+
+    while size >= ONE_PAGE_MIN_FONT:
+        try:
+            data = _draw_one_page(report, kind, size)
+        except LayoutError:
+            # Дві колонки — один нерозривний блок. Коли він вищий за сторінку,
+            # reportlab не ділить його, а падає; для нас це те саме «не влізло».
+            size -= 0.5
+            continue
+        if data.count(b"/Type /Page") - data.count(b"/Type /Pages") <= 1:
+            return data
+        size -= 0.5
+
+    # Школа завелика, щоб влізти на аркуш навіть найдрібнішим кеглем. Краще
+    # багатосторінковий звіт, ніж жодного: інакше виняток дійшов би до джоба,
+    # той мовчки проковтнув би його, і того дня не прийшло б ні PDF, ні листа.
+    log.warning(
+        "Звіт %s за %s не вміщається на аркуш — друкую в кілька сторінок",
+        kind.value, report.date,
+    )
+    return _draw_flowing(report, kind, ONE_PAGE_MIN_FONT)
