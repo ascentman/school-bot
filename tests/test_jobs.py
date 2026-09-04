@@ -243,6 +243,48 @@ async def test_reports_do_not_email_when_channel_is_off(bot, maker, school):
     assert await jobs.meals_report(bot, maker, MONDAY) == 1
 
 
+async def test_one_broken_render_does_not_lose_the_other_report(maker, school, monkeypatch):
+    """Кнопка «Сьогодні»: зламаний звіт має коштувати свій файл, а не обидва.
+
+    Знайдено на рев'ю PR #13 — обидва рендери стояли під одним try/except,
+    тож збій другого забирав з собою вже готовий перший.
+    """
+    from school_bot.domain.meals import day_summary
+    from school_bot.reports.day import ReportKind
+
+    real = jobs.render_day_report
+
+    def half_broken(report, kind):
+        if kind is ReportKind.ABSENCE:
+            raise RuntimeError("ReportLab не зміг")
+        return real(report, kind)
+
+    monkeypatch.setattr(jobs, "render_day_report", half_broken)
+
+    async with maker() as s:
+        summary = await day_summary(s, MONDAY)
+    docs = jobs.day_report_attachments(summary)
+
+    assert [d.filename for d in docs] == ["harchuvannia_2026-09-07.pdf"]
+
+
+async def test_report_tells_admins_when_there_are_no_classes(bot, maker, school):
+    """Жодного активного класу — це помилка налаштування, і її має бути видно."""
+    from sqlalchemy import update
+
+    from school_bot.db.models import SchoolClass
+
+    async with maker() as s:
+        await s.execute(update(SchoolClass).values(is_active=False))
+        await s.commit()
+
+    assert await jobs.meals_report(bot, maker, MONDAY) == 0
+    assert bot.to(2002), "адмін мав отримати попередження, а не тишу"
+
+    async with maker() as s:
+        assert await jobs.has_run(s, "report:meals", MONDAY)
+
+
 # --- стійкість ------------------------------------------------------------
 
 

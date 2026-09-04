@@ -155,25 +155,33 @@ async def _send_document(bot: Bot, chat_id: int, document: BufferedInputFile) ->
 def day_report_attachments(summary: DaySummary) -> list[BufferedInputFile]:
     """Обидва щоденні звіти як вкладення Telegram.
 
-    Порожній список, якщо побудувати не вдалося: збій рендеру має коштувати
-    файл, а не всю відповідь бота.
+    Кожен рендериться окремо: збій одного має коштувати саме той файл, а не
+    обидва. Інакше зламаний звіт про відсутніх забирав би з собою вже готовий
+    звіт про харчування — а його чекає кухня.
     """
     if not summary.statuses:
         return []
+
     try:
         report = build_report(
             summary, school_name=settings.school_name, slots=settings.meal_slots
         )
-        return [
-            BufferedInputFile(
-                render_day_report(report, kind),
-                filename=day_report_filename(summary.date, kind),
-            )
-            for kind in (ReportKind.MEALS, ReportKind.ABSENCE)
-        ]
     except Exception:
-        log.exception("Не вдалося побудувати звіти за %s", summary.date)
+        log.exception("Не вдалося зібрати звіт за %s", summary.date)
         return []
+
+    documents: list[BufferedInputFile] = []
+    for kind in (ReportKind.MEALS, ReportKind.ABSENCE):
+        try:
+            documents.append(
+                BufferedInputFile(
+                    render_day_report(report, kind),
+                    filename=day_report_filename(summary.date, kind),
+                )
+            )
+        except Exception:
+            log.exception("Не вдалося намалювати звіт %s за %s", kind.value, summary.date)
+    return documents
 
 
 async def _admin_chat_ids(session: AsyncSession) -> list[int]:
@@ -321,7 +329,14 @@ async def _day_report_job(
 
         summary = await day_summary(session, d)
         if not summary.statuses:
+            # Мовчати тут не можна: жодного активного класу — це не «нема
+            # роботи», а помилка налаштування, і побачити її має людина,
+            # а не лише лог. Маркер ставимо, щоб не слати те саме щостарту.
             log.warning("%s: немає активних класів, звіт не будую", d)
+            for chat_id in await _admin_chat_ids(session):
+                await _send(bot, chat_id, texts.NO_ACTIVE_CLASSES)
+            await mark_run(session, job_key, d)
+            await session.commit()
             return 0
 
         report = build_report(

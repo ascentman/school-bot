@@ -343,3 +343,50 @@ def test_absence_report_also_fits_one_page(n):
     """Той самий аркуш і для відсутніх: його теж друкують."""
     pdf = render_day_report(_report_with(n), ReportKind.ABSENCE)
     assert _pages(pdf) == 1, f"{n} класів дали більше однієї сторінки"
+
+
+def test_table_fits_the_printed_area():
+    """Таблиця не має наїжджати на береги.
+
+    Знайдено на рев'ю PR #13: проміжок додавався до кожної половини, і 188 мм
+    опинялися в рамці 182 мм. reportlab падає лише по висоті — надто широку
+    таблицю він просто центрує поверх берегів, тож на екрані це непомітно,
+    а на роздруку видно.
+    """
+    from school_bot.reports.pdf import (
+        COLUMN_GAP,
+        HALF_WIDTH,
+        KIND_COLUMNS,
+        USABLE_WIDTH,
+    )
+
+    assert 2 * (HALF_WIDTH + COLUMN_GAP) <= USABLE_WIDTH
+    for kind, (_, widths) in KIND_COLUMNS.items():
+        assert sum(widths) <= HALF_WIDTH, f"{kind.value}: колонки ширші за половину"
+
+
+def test_single_serving_slot_keeps_a_header_in_both_columns():
+    """Школа з однією зміною: права колонка не має лишитися без підпису.
+
+    Знайдено на рев'ю PR #13 — межі груп не було, і код падав у наївний розріз
+    посередині, лишаючи половину класів без заголовка.
+    """
+    from school_bot.reports.pdf import _split_in_two
+
+    rows = [(["08:45 – 09:00", "50"], True)]
+    rows += [([f"{i}-А", "10"], False) for i in range(1, 11)]
+
+    left, right = _split_in_two(rows)
+    assert left[0][1] is True
+    assert right[0][1] is True, "друга колонка без заголовка зміни"
+    assert right[0][0][0] == "08:45 – 09:00"
+
+
+def test_no_slots_at_all_still_splits():
+    """Без MEAL_SLOTS заголовків немає взагалі — розріз має просто спрацювати."""
+    from school_bot.reports.pdf import _split_in_two
+
+    rows = [([f"{i}-А", "10"], False) for i in range(1, 11)]
+    left, right = _split_in_two(rows)
+    assert len(left) + len(right) == 10
+    assert left and right

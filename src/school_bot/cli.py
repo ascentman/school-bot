@@ -203,10 +203,21 @@ def day_report(
                 await mailer.send_day_report(report, pdf, kind=report_kind)
                 typer.echo(f"  → надіслано на {', '.join(settings.report_emails)}")
 
-        typer.echo(
-            f"  {d}: {report.total} порцій, подали {report.submitted} з {report.expected}"
-            + (f", не подали — {', '.join(report.missing)}" if report.missing else "")
-        )
+        # Підсумок мовою того звіту, який попросили: після --kind absence
+        # рядок про порції збивав би з пантелику.
+        if ReportKind.MEALS in wanted:
+            typer.echo(
+                f"  {d}: {report.total} порцій, подали {report.submitted}"
+                f" з {report.expected}"
+                + (f", не подали — {', '.join(report.missing)}" if report.missing else "")
+            )
+        if ReportKind.ABSENCE in wanted:
+            absent = report.absent_total
+            sick = report.sick_total
+            typer.echo(
+                f"  {d}: відсутніх {absent if absent is not None else '—'}"
+                f", з них хворі {sick if sick is not None else '—'}"
+            )
 
     asyncio.run(_go())
 

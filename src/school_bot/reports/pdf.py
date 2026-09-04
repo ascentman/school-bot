@@ -200,12 +200,18 @@ def render_pdf(*matrices: MonthMatrix) -> bytes:
 # вміщається. Дві колонки поруч — бо 35 рядків в одну таким шрифтом не лягають.
 ONE_PAGE_MAX_FONT = 26
 ONE_PAGE_MIN_FONT = 8
-COLUMN_GAP = 4 * mm
 
-# Ширини комірок у половині аркуша: (підпис, значення…). Разом ≤ 90 мм.
+PAGE_MARGIN = 14 * mm
+USABLE_WIDTH = A4[0] - 2 * PAGE_MARGIN      # 182 мм
+COLUMN_GAP = 2 * mm                          # проміжок між двома половинами
+HALF_WIDTH = (USABLE_WIDTH - 2 * COLUMN_GAP) / 2
+
+# Ширини комірок у половині аркуша: (підпис, значення…). Сума кожного набору
+# має вкладатися в HALF_WIDTH — інакше таблиця мовчки наїде на поля: reportlab
+# падає лише по висоті, а надто широку просто центрує поверх берегів.
 KIND_COLUMNS: dict[ReportKind, tuple[list[str], list[float]]] = {
-    ReportKind.MEALS: (["Клас", "Харч."], [58 * mm, 32 * mm]),
-    ReportKind.ABSENCE: (["Клас", "Відс.", "Хворі"], [44 * mm, 23 * mm, 23 * mm]),
+    ReportKind.MEALS: (["Клас", "Харч."], [56 * mm, 32 * mm]),
+    ReportKind.ABSENCE: (["Клас", "Відс.", "Хворі"], [42 * mm, 23 * mm, 23 * mm]),
 }
 
 
@@ -213,8 +219,8 @@ def _big_doc(buf: BytesIO, title: str) -> SimpleDocTemplate:
     return SimpleDocTemplate(
         buf,
         pagesize=A4,
-        leftMargin=14 * mm,
-        rightMargin=14 * mm,
+        leftMargin=PAGE_MARGIN,
+        rightMargin=PAGE_MARGIN,
         topMargin=12 * mm,
         bottomMargin=12 * mm,
         title=title,
@@ -255,10 +261,18 @@ def _split_in_two(
     """
     middle = (len(rows) + 1) // 2
     candidates = [i for i, (_, is_group) in enumerate(rows) if is_group and i > 0]
-    if not candidates:
-        return rows[:middle], rows[middle:]
-    cut = min(candidates, key=lambda i: abs(i - middle))
-    return rows[:cut], rows[cut:]
+    if candidates:
+        cut = min(candidates, key=lambda i: abs(i - middle))
+        return rows[:cut], rows[cut:]
+
+    # Межі немає — уся школа в одній зміні (MEAL_SLOTS з одним інтервалом) або
+    # розкладу немає взагалі. Ріжемо посередині, але повторюємо заголовок
+    # зверху другої колонки: інакше половина класів висіла б без підпису.
+    left, right = rows[:middle], rows[middle:]
+    header = next((cells for cells, is_group in rows if is_group), None)
+    if header is not None and right:
+        right = [(header, True), *right]
+    return left, right
 
 
 def _fits_width(
@@ -375,13 +389,14 @@ def _draw_one_page(report: DayReport, kind: ReportKind, size: float) -> bytes:
         )
 
     left, right = _split_in_two(_report_rows(report, kind))
-    half = sum(widths)
+    # Проміжок додається до кожної половини рівно один раз, і сума не має
+    # перевищувати USABLE_WIDTH — це стереже тест test_table_fits_the_page.
     columns = Table(
         [[
             _half_table(left, headers, widths, font, bold, size),
             _half_table(right, headers, widths, font, bold, size),
         ]],
-        colWidths=[half + COLUMN_GAP, half + COLUMN_GAP],
+        colWidths=[HALF_WIDTH + COLUMN_GAP, HALF_WIDTH + COLUMN_GAP],
         hAlign="CENTER",
     )
     columns.setStyle(TableStyle([
