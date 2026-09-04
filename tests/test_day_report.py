@@ -377,6 +377,27 @@ def test_columns_never_split_a_serving_slot():
     assert left and right
 
 
+@pytest.mark.parametrize("n", [60, 80])
+def test_one_page_holds_for_a_very_large_school(n):
+    """Межа одного аркуша має триматися далеко за межами реальної школи."""
+    for kind in (ReportKind.MEALS, ReportKind.ABSENCE):
+        assert _pages(render_day_report(_report_with(n), kind)) == 1
+
+
+@pytest.mark.parametrize("n", [100, 200])
+def test_enormous_school_gets_pages_instead_of_nothing(n):
+    """За межею аркуша звіт друкується в кілька сторінок, а не зникає.
+
+    Знайдено на рев'ю PR #13: двоколонковий блок нерозривний, тож reportlab
+    кидав LayoutError, джоб мовчки його ковтав — і того дня не приходило ні
+    PDF, ні листа, без жодного натяку чому.
+    """
+    for kind in (ReportKind.MEALS, ReportKind.ABSENCE):
+        pdf = render_day_report(_report_with(n), kind)   # не має кидати виняток
+        assert pdf.startswith(b"%PDF")
+        assert _pages(pdf) > 1
+
+
 @pytest.mark.parametrize("n", [3, 25, 33, 45])
 def test_absence_report_also_fits_one_page(n):
     """Той самий аркуш і для відсутніх: його теж друкують."""

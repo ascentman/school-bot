@@ -253,8 +253,6 @@ def report_ready(kind, report) -> str:
     head = f"📄 <b>{esc(UA_REPORT_KIND[kind])}</b> · {format_date(report.date)}"
     if kind is ReportKind.MEALS:
         body = f"Разом: <b>{plural_children(report.total)}</b>"
-        if report.missing:
-            body += f"\n❗ Не подали: {esc(', '.join(report.missing))}"
     else:
         absent = report.absent_total
         sick = report.sick_total
@@ -262,6 +260,11 @@ def report_ready(kind, report) -> str:
             f"Відсутніх: <b>{absent if absent is not None else '—'}</b> · "
             f"з них хворі: <b>{sick if sick is not None else '—'}</b>"
         )
+    # Боржники стосуються обох звітів: класи, що не подали нічого, не входять
+    # у суму, тож без цього рядка цифра виглядала б повною, хоч насправді
+    # може бути більшою.
+    if report.missing:
+        body += f"\n❗ Не подали: {esc(', '.join(report.missing))}"
     return f"{head}\n{body}"
 
 

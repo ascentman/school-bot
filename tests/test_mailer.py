@@ -244,3 +244,17 @@ def test_connection_always_has_a_timeout(smtp_double, monkeypatch):
                                            recipients=["c@d.ua"]))
 
     assert smtp_double.instances[0].timeout == mailer.settings.smtp_timeout
+
+
+def test_both_reports_name_who_did_not_submit():
+    """Клас без запису не входить у суму — про це має сказати кожен звіт.
+
+    Знайдено на рев'ю PR #13: звіт про відсутніх мовчки показував «Відсутніх: 2»,
+    хоч один клас не подав нічого й реальна цифра могла бути більшою.
+    """
+    from school_bot.reports.day import ReportKind
+
+    for kind in (ReportKind.MEALS, ReportKind.ABSENCE):
+        body = mailer.body_for(_report(), kind)
+        assert "Не подали: 3-Б" in body, f"{kind.value}: немає списку боржників"
+        assert "Подали дані: 1 з 2" in body

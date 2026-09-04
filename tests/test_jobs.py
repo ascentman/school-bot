@@ -285,6 +285,20 @@ async def test_report_tells_admins_when_there_are_no_classes(bot, maker, school)
         assert await jobs.has_run(s, "report:meals", MONDAY)
 
 
+async def test_absence_report_also_names_missing_classes(bot, maker, school):
+    """Медсестра має бачити, що дані неповні, а не лише підсумкову цифру."""
+    async with maker() as s:
+        await upsert_entry(
+            s, class_id=school["classes"][0], d=MONDAY, eating_count=24,
+            absent_count=2, sick_count=1, teacher_id=school["maria"],
+        )
+        await s.commit()
+
+    await jobs.absence_report(bot, maker, MONDAY)
+    text = bot.to(2002)[0].text
+    assert "Не подали" in text and "3-Б" in text
+
+
 # --- стійкість ------------------------------------------------------------
 
 

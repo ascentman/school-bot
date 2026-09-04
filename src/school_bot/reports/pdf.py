@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from io import BytesIO
 
 from reportlab.lib import colors
@@ -23,6 +24,8 @@ from reportlab.platypus.doctemplate import LayoutError
 from school_bot.domain.dates import format_date
 from school_bot.reports.day import UA_REPORT_KIND, DayReport, ReportKind
 from school_bot.reports.matrix import MonthMatrix
+
+log = logging.getLogger(__name__)
 
 # Кирилиця: вбудовані шрифти reportlab її не мають, тому шукаємо системний.
 # Жирне накреслення йде парою до звичайного: підмішувати жирний з іншої
@@ -413,7 +416,10 @@ def _draw_one_page(report: DayReport, kind: ReportKind, size: float) -> bytes:
     ]))
     story.append(columns)
 
-    if meals and report.missing:
+    # Виноска потрібна обом звітам: для відсутніх вона навіть важливіша —
+    # клас, що не подав нічого, не входить у суму, тож «Відсутніх: 15» без
+    # цього рядка виглядало б повною цифрою, а насправді може бути більшою.
+    if report.missing:
         story.append(
             Paragraph(
                 f"Не подали ({len(report.missing)}): " + ", ".join(report.missing),
@@ -429,13 +435,48 @@ def _draw_one_page(report: DayReport, kind: ReportKind, size: float) -> bytes:
     return buf.getvalue()
 
 
+def _draw_flowing(report: DayReport, kind: ReportKind, size: float) -> bytes:
+    """Запасний рендер для дуже великої школи: одна колонка, кілька сторінок.
+
+    Дві колонки — нерозривний блок, і коли він вищий за аркуш, reportlab не
+    ділить його, а падає. Звичайна одноколонкова таблиця ділиться штатно, тож
+    надто велика школа отримає багатосторінковий звіт замість жодного.
+    """
+    font = _cyrillic_font()
+    bold = _bold_font()
+    headers, widths = KIND_COLUMNS[kind]
+    heading = UA_REPORT_KIND[kind]
+    buf = BytesIO()
+    day_title = f"{format_date(report.date, with_weekday=True)} {report.date.year} р."
+    doc = _big_doc(buf, f"{heading} — {day_title}")
+
+    title_style = ParagraphStyle(
+        "ft", fontName=bold, fontSize=20, alignment=1, spaceAfter=2, leading=24
+    )
+    sub_style = ParagraphStyle(
+        "fs", fontName=font, fontSize=11, alignment=1, spaceAfter=8,
+        textColor=colors.HexColor("#444444"),
+    )
+    story = [
+        Paragraph(heading, title_style),
+        Paragraph(f"{report.school_name} · {day_title}", sub_style),
+        _half_table(_report_rows(report, kind), headers, widths, font, bold, size),
+    ]
+    doc.build(story)
+    return buf.getvalue()
+
+
 def render_day_report(report: DayReport, kind: ReportKind) -> bytes:
-    """Щоденний звіт: гарантовано один аркуш А4, найбільшим можливим кеглем.
+    """Щоденний звіт: один аркуш А4 і найбільший кегль, який на ньому вміщається.
 
     Ширину перевіряємо самі, а висоту — єдиним надійним способом: будуємо
     документ і дивимося, скільки вийшло сторінок. Тому кегль спускаємо, поки
-    не влізе; більша школа має отримати менший шрифт, а не другу сторінку —
-    її просто не понесуть на роздачу.
+    не влізе; більша школа отримує менший шрифт, а не другу сторінку — її
+    просто не понесуть на роздачу.
+
+    Межа все ж існує: приблизно від ста класів на аркуш не лягає навіть
+    найдрібніший кегль. Там звіт друкується в кілька сторінок — це гірше, але
+    незрівнянно краще, ніж не отримати його взагалі.
     """
     font = _cyrillic_font()
     bold = _bold_font()
@@ -454,4 +495,12 @@ def render_day_report(report: DayReport, kind: ReportKind) -> bytes:
         if data.count(b"/Type /Page") - data.count(b"/Type /Pages") <= 1:
             return data
         size -= 0.5
-    return _draw_one_page(report, kind, ONE_PAGE_MIN_FONT)
+
+    # Школа завелика, щоб влізти на аркуш навіть найдрібнішим кеглем. Краще
+    # багатосторінковий звіт, ніж жодного: інакше виняток дійшов би до джоба,
+    # той мовчки проковтнув би його, і того дня не прийшло б ні PDF, ні листа.
+    log.warning(
+        "Звіт %s за %s не вміщається на аркуш — друкую в кілька сторінок",
+        kind.value, report.date,
+    )
+    return _draw_flowing(report, kind, ONE_PAGE_MIN_FONT)

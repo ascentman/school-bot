@@ -50,12 +50,13 @@ def body_for(report: DayReport, kind: ReportKind = ReportKind.MEALS) -> str:
     ]
     if meals:
         lines.append(f"Разом на харчуванні: {plural_children(report.total)}")
-        lines.append(f"Подали дані: {report.submitted} з {report.expected} класів")
-        if report.missing:
-            lines += ["", "Не подали: " + ", ".join(report.missing)]
     else:
         lines.append(f"Всього відсутніх: {num(report.absent_total)}")
         lines.append(f"З них по хворобі: {num(report.sick_total)}")
+    lines.append(f"Подали дані: {report.submitted} з {report.expected} класів")
+    # Однаково для обох звітів: клас, що не подав нічого, у сумі не врахований.
+    if report.missing:
+        lines += ["", "Не подали: " + ", ".join(report.missing)]
 
     lines += ["", "Деталі за змінами роздачі — у PDF у вкладенні.", ""]
     for group in report.groups:
