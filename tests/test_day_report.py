@@ -306,25 +306,40 @@ def test_meals_report_always_fits_one_page(n):
     assert _pages(pdf) == 1, f"{n} класів дали більше однієї сторінки"
 
 
-def test_meals_font_shrinks_only_when_it_has_to():
+def test_font_shrinks_only_when_it_has_to():
     """Маленька школа має отримати найбільший кегль, а не той самий, що велика."""
     from school_bot.reports.pdf import (
-        MEALS_MAX_FONT,
-        _best_meals_font,
+        KIND_COLUMNS,
+        ONE_PAGE_MAX_FONT,
+        _best_font,
         _bold_font,
         _cyrillic_font,
-        _meal_rows,
+        _report_rows,
     )
 
-    small = _best_meals_font(_meal_rows(_report_with(3)), _cyrillic_font(), _bold_font())
-    assert small == MEALS_MAX_FONT
+    headers, widths = KIND_COLUMNS[ReportKind.MEALS]
+    rows = _report_rows(_report_with(3), ReportKind.MEALS)
+    size = _best_font(rows, headers, widths, _cyrillic_font(), _bold_font())
+    assert size == ONE_PAGE_MAX_FONT
 
 
 def test_columns_never_split_a_serving_slot():
     """Зміну не можна розірвати між колонками — око шукає її цілою."""
     from school_bot.reports.pdf import _split_in_two
 
-    rows = [("08:45 – 09:00", "5", True), ("1-А", "5", False),
-            ("09:15 – 09:30", "7", True), ("2-А", "7", False)]
+    rows = [
+        (["08:45 – 09:00", "5"], True),
+        (["1-А", "5"], False),
+        (["09:15 – 09:30", "7"], True),
+        (["2-А", "7"], False),
+    ]
     left, right = _split_in_two(rows)
-    assert right[0][2] is True, "друга колонка має починатися зі зміни"
+    assert right[0][1] is True, "друга колонка має починатися зі зміни"
+    assert left and right
+
+
+@pytest.mark.parametrize("n", [3, 25, 33, 45])
+def test_absence_report_also_fits_one_page(n):
+    """Той самий аркуш і для відсутніх: його теж друкують."""
+    pdf = render_day_report(_report_with(n), ReportKind.ABSENCE)
+    assert _pages(pdf) == 1, f"{n} класів дали більше однієї сторінки"
