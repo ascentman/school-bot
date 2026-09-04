@@ -19,11 +19,12 @@ from school_bot.domain.classes import parse_class_name
 from school_bot.domain.slots import parse_meal_slots
 from school_bot.reports.day import (
     UNSCHEDULED_LABEL,
+    ReportKind,
     build_day_report,
     build_report,
     day_report_filename,
 )
-from school_bot.reports.pdf import render_day_pdf
+from school_bot.reports.pdf import render_day_report
 
 DAY = date(2026, 9, 3)
 
@@ -198,7 +199,7 @@ async def test_pdf_renders_for_a_real_day(session, classes):
     report = await build_day_report(
         session, DAY, school_name="44 Школа", slots=parse_meal_slots(SCHEDULE)
     )
-    pdf = render_day_pdf(report)
+    pdf = render_day_report(report, ReportKind.MEALS)
     assert pdf.startswith(b"%PDF")
     assert len(pdf) > 1000
 
@@ -207,7 +208,7 @@ async def test_pdf_renders_for_a_real_day(session, classes):
 async def test_pdf_renders_when_nobody_submitted_anything(session, classes):
     """День без жодної цифри — звичайний стан о 09:35, не привід падати."""
     report = await build_day_report(session, DAY, slots=parse_meal_slots(SCHEDULE))
-    assert render_day_pdf(report).startswith(b"%PDF")
+    assert render_day_report(report, ReportKind.ABSENCE).startswith(b"%PDF")
 
 
 def test_filename_carries_the_date():
@@ -271,3 +272,59 @@ async def test_totals_stay_empty_when_nobody_reported_absences(session, classes)
     report = await build_day_report(session, DAY)
     assert report.absent_total is None
     assert report.sick_total is None
+
+
+# --- звіт про харчування завжди на одному аркуші ---------------------------
+
+
+def _pages(pdf: bytes) -> int:
+    return pdf.count(b"/Type /Page") - pdf.count(b"/Type /Pages")
+
+
+def _report_with(n_classes: int) -> object:
+    from school_bot.domain.meals import ClassDayStatus, DaySummary
+
+    statuses = [
+        ClassDayStatus(
+            school_class=SchoolClass(name=f"{i // 3 + 1}-{'АБВ'[i % 3]}",
+                                     grade=i // 3 + 1, letter="АБВ"[i % 3]),
+            entry=MealEntry(date=DAY, eating_count=20 + i % 9),
+        )
+        for i in range(n_classes)
+    ]
+    return build_report(DaySummary(date=DAY, statuses=statuses), school_name="44 Школа")
+
+
+@pytest.mark.parametrize("n", [3, 25, 33, 45])
+def test_meals_report_always_fits_one_page(n):
+    """Головна вимога: аркуш один, скільки б не було класів.
+
+    Кегль підбирається сам, тож зростання школи має зменшувати шрифт, а не
+    додавати другу сторінку — її просто не понесуть на роздачу.
+    """
+    pdf = render_day_report(_report_with(n), ReportKind.MEALS)
+    assert _pages(pdf) == 1, f"{n} класів дали більше однієї сторінки"
+
+
+def test_meals_font_shrinks_only_when_it_has_to():
+    """Маленька школа має отримати найбільший кегль, а не той самий, що велика."""
+    from school_bot.reports.pdf import (
+        MEALS_MAX_FONT,
+        _best_meals_font,
+        _bold_font,
+        _cyrillic_font,
+        _meal_rows,
+    )
+
+    small = _best_meals_font(_meal_rows(_report_with(3)), _cyrillic_font(), _bold_font())
+    assert small == MEALS_MAX_FONT
+
+
+def test_columns_never_split_a_serving_slot():
+    """Зміну не можна розірвати між колонками — око шукає її цілою."""
+    from school_bot.reports.pdf import _split_in_two
+
+    rows = [("08:45 – 09:00", "5", True), ("1-А", "5", False),
+            ("09:15 – 09:30", "7", True), ("2-А", "7", False)]
+    left, right = _split_in_two(rows)
+    assert right[0][2] is True, "друга колонка має починатися зі зміни"

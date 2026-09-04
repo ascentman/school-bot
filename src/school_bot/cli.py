@@ -29,13 +29,13 @@ from school_bot.domain.meals import active_classes, day_summary, upsert_entry
 from school_bot.domain.phones import format_phone
 from school_bot.domain.teachers import import_teachers
 from school_bot.reports import mailer, sheets
-from school_bot.reports.day import build_day_report, day_report_filename
+from school_bot.reports.day import ReportKind, build_day_report, day_report_filename
 from school_bot.reports.matrix import (
     available_months,
     build_month_matrices,
     build_month_matrix,
 )
-from school_bot.reports.pdf import render_day_pdf, render_pdf
+from school_bot.reports.pdf import render_day_report, render_pdf
 from school_bot.reports.xlsx import render_xlsx
 from school_bot.scheduler import jobs
 
@@ -61,7 +61,7 @@ async def _make_bot() -> Bot:
 
 
 def _run_broadcast(job: BroadcastJob, date: str | None, force: bool, label: str) -> None:
-    """Спільна обгортка для prompt/remind/digest: схема запуску в них однакова."""
+    """Спільна обгортка для prompt/remind/звітів: схема запуску в них однакова."""
     _setup_logging()
 
     async def _go() -> None:
@@ -100,13 +100,22 @@ def remind(
     _run_broadcast(jobs.remind, date, force, "Надіслано нагадувань")
 
 
-@app.command()
-def digest(
+@app.command("meals-report")
+def meals_report(
     date: str = typer.Option(None),
     force: bool = typer.Option(False),
 ) -> None:
-    """Надіслати зведення адміністраторам."""
-    _run_broadcast(jobs.admin_digest, date, force, "Надіслано зведень")
+    """Надіслати звіт про харчування."""
+    _run_broadcast(jobs.meals_report, date, force, "Надіслано звітів про харчування")
+
+
+@app.command("absence-report")
+def absence_report(
+    date: str = typer.Option(None),
+    force: bool = typer.Option(False),
+) -> None:
+    """Надіслати звіт про відсутніх і хворих."""
+    _run_broadcast(jobs.absence_report, date, force, "Надіслано звітів про відсутніх")
 
 
 @app.command()
@@ -156,8 +165,9 @@ def day_report(
     date: str = typer.Option(None, help="Дата РРРР-ММ-ДД. Без параметра — сьогодні."),
     out: Path = typer.Option(Path("reports_out"), help="Куди зберегти"),
     email: bool = typer.Option(False, help="Ще й надіслати на REPORT_EMAILS"),
+    kind: str = typer.Option("both", help="meals | absence | both"),
 ) -> None:
-    """Згенерувати PDF-звіт за день у файл (і, за потреби, надіслати поштою)."""
+    """Згенерувати PDF-звіти за день у файли (і, за потреби, надіслати поштою)."""
     _setup_logging()
     d = _parse_date(date)      # без параметра — сьогодні
 
@@ -169,23 +179,34 @@ def day_report(
                 session, d, school_name=settings.school_name, slots=settings.meal_slots
             )
 
-        pdf = render_day_pdf(report)
-        path = out / day_report_filename(d)
-        path.write_bytes(pdf)
-        typer.echo(f"✔ {path}")
+        wanted = {
+            "meals": [ReportKind.MEALS],
+            "absence": [ReportKind.ABSENCE],
+            "both": [ReportKind.MEALS, ReportKind.ABSENCE],
+        }.get(kind)
+        if wanted is None:
+            typer.echo("✖ --kind має бути meals, absence або both")
+            raise typer.Exit(1)
+
+        for report_kind in wanted:
+            pdf = render_day_report(report, report_kind)
+            path = out / day_report_filename(d, report_kind)
+            path.write_bytes(pdf)
+            typer.echo(f"✔ {path}")
+
+            if email:
+                if not settings.email_enabled:
+                    typer.echo("✖ Пошта не налаштована: заповніть SMTP_* і REPORT_EMAILS")
+                    raise typer.Exit(1)
+                # Тут навмисно без safe_-обгортки: команду запустили, щоб
+                # перевірити налаштування, тож помилка SMTP має бути на екрані.
+                await mailer.send_day_report(report, pdf, kind=report_kind)
+                typer.echo(f"  → надіслано на {', '.join(settings.report_emails)}")
+
         typer.echo(
             f"  {d}: {report.total} порцій, подали {report.submitted} з {report.expected}"
             + (f", не подали — {', '.join(report.missing)}" if report.missing else "")
         )
-
-        if email:
-            if not settings.email_enabled:
-                typer.echo("✖ Пошта не налаштована: заповніть SMTP_* і REPORT_EMAILS у .env")
-                raise typer.Exit(1)
-            # Тут навмисно без safe_-обгортки: команду запустили, щоб перевірити
-            # налаштування, тож помилка SMTP має бути видно, а не в логах.
-            await mailer.send_day_report(report, pdf)
-            typer.echo(f"✔ надіслано на {', '.join(settings.report_emails)}")
 
     asyncio.run(_go())
 

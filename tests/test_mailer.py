@@ -72,11 +72,34 @@ def test_body_answers_the_question_without_opening_the_pdf():
     assert "1-А: 17" in body
 
 
-def test_body_reports_absences_too():
-    body = mailer.body_for(_report())
+def test_absence_body_reports_absences():
+    """Лист про відсутніх говорить про відсутніх, а не про порції."""
+    from school_bot.reports.day import ReportKind
+
+    body = mailer.body_for(_report(), ReportKind.ABSENCE)
     assert "Всього відсутніх:" in body
-    assert "з них по хворобі:" in body
-    assert "відсутні —" in body         # у фікстурі відсутніх не подавали
+    assert "З них по хворобі:" in body
+    assert "Разом на харчуванні" not in body
+
+
+def test_meals_body_stays_about_meals():
+    from school_bot.reports.day import ReportKind
+
+    body = mailer.body_for(_report(), ReportKind.MEALS)
+    assert "Разом на харчуванні: 17 дітей" in body
+    assert "Всього відсутніх:" not in body
+
+
+def test_subject_and_filename_follow_the_kind():
+    from school_bot.reports.day import ReportKind
+
+    rep = _report()
+    assert "Харчування" in mailer.subject_for(rep, ReportKind.MEALS)
+    assert "Відсутні" in mailer.subject_for(rep, ReportKind.ABSENCE)
+
+    msg = mailer.build_message(rep, b"%PDF", sender="a@b.ua", recipients=["c@d.ua"],
+                               kind=ReportKind.ABSENCE)
+    assert next(msg.iter_attachments()).get_filename() == "vidsutni_2026-09-03.pdf"
 
 
 def test_body_shows_a_dash_for_a_class_that_did_not_submit():

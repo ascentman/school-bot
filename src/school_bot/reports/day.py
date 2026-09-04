@@ -11,6 +11,7 @@ import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date as Date
+from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,13 +35,32 @@ def _optional_sum(values: Iterable[int | None]) -> int | None:
     return sum(present) if present else None
 
 
-def day_report_filename(d: Date) -> str:
+class ReportKind(StrEnum):
+    """Два звіти за день, бо їх читають різні люди.
+
+    Харчування йде на кухню й до бухгалтерії, відсутні — до медсестри й
+    класних керівників. Зшивати їх в один аркуш означало б, що кожен читає
+    половину чужого.
+    """
+
+    MEALS = "meals"
+    ABSENCE = "absence"
+
+
+UA_REPORT_KIND = {
+    ReportKind.MEALS: "Харчування",
+    ReportKind.ABSENCE: "Відсутні та хворі",
+}
+
+
+def day_report_filename(d: Date, kind: ReportKind = ReportKind.MEALS) -> str:
     """Ім'я файлу звіту за день.
 
     Спільне для розсилки й кнопки: інакше той самий звіт приходив би
     під двома різними назвами.
     """
-    return f"harchuvannia_{d:%Y-%m-%d}.pdf"
+    stem = "harchuvannia" if kind is ReportKind.MEALS else "vidsutni"
+    return f"{stem}_{d:%Y-%m-%d}.pdf"
 
 
 @dataclass(slots=True)

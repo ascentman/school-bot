@@ -8,6 +8,7 @@ from html import escape
 from school_bot.config import settings
 from school_bot.db.models import MAX_NAME_LEN
 from school_bot.domain.dates import format_date, plural_children
+from school_bot.reports.day import UA_REPORT_KIND, ReportKind
 
 
 def esc(value: str) -> str:
@@ -245,6 +246,23 @@ def digest(d: Date, submitted: int, expected: int, total: int, missing: list[str
     else:
         lines += ["", "✅ Усі класи подали дані."]
     return "\n".join(lines)
+
+
+def report_ready(kind, report) -> str:
+    """Короткий супровід до файлу: головні цифри видно ще до відкриття."""
+    head = f"📄 <b>{esc(UA_REPORT_KIND[kind])}</b> · {format_date(report.date)}"
+    if kind is ReportKind.MEALS:
+        body = f"Разом: <b>{plural_children(report.total)}</b>"
+        if report.missing:
+            body += f"\n❗ Не подали: {esc(', '.join(report.missing))}"
+    else:
+        absent = report.absent_total
+        sick = report.sick_total
+        body = (
+            f"Відсутніх: <b>{absent if absent is not None else '—'}</b> · "
+            f"з них хворі: <b>{sick if sick is not None else '—'}</b>"
+        )
+    return f"{head}\n{body}"
 
 
 NO_ACTIVE_CLASSES = "Немає жодного активного класу. Додайте класи в меню «🏫 Класи»."

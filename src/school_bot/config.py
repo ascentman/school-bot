@@ -52,7 +52,10 @@ class Settings(BaseSettings):
     remind_times: Annotated[list[time], NoDecode] = Field(
         default_factory=lambda: [time(9, 15), time(9, 30)]
     )
-    digest_time: time = time(9, 35)
+    # Два окремі звіти замість одного спільного: харчування читає кухня, а
+    # відсутніх — медсестра й класні керівники. Різні читачі, різні аркуші.
+    meals_report_time: time = time(9, 40)
+    absence_report_time: time = time(9, 50)
     sheets_rebuild_time: time = time(20, 0)
 
     # Розклад роздачі: у якому порядку класи йдуть до їдальні. Впливає лише на
