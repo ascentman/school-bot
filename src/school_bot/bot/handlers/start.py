@@ -325,7 +325,7 @@ async def my_classes(
     rows = []
     for school_class in classes:
         entry = await get_entry(session, school_class.id, d)
-        rows.append((school_class.id, school_class.name, entry.eating_count if entry else None))
+        rows.append((school_class.id, school_class.name, entry.absent_count if entry else None))
 
     await message.answer(
         texts.my_classes_header(d),

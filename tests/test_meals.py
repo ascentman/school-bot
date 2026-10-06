@@ -6,12 +6,10 @@ import pytest
 from sqlalchemy import func, select
 
 from school_bot.db.models import ClassAssignment, EntrySource, MealEntry, MealEntryAudit
-from school_bot.domain.dates import plural_children
 from school_bot.domain.meals import (
     classes_for_teacher,
     day_summary,
     get_entry,
-    last_known_count,
     primary_teacher_ids,
     upsert_entry,
 )
@@ -22,101 +20,106 @@ MONDAY = D
 
 async def test_insert_creates_entry_and_audit(session, classes, teacher):
     entry, updated = await upsert_entry(
-        session, class_id=classes[0].id, d=D, eating_count=24, teacher_id=teacher.id
+        session, class_id=classes[0].id, d=D, absent_count=3, teacher_id=teacher.id
     )
     assert not updated
-    assert entry.eating_count == 24
+    assert entry.absent_count == 3
 
     audits = list(await session.scalars(select(MealEntryAudit)))
     assert len(audits) == 1
     assert audits[0].old_value is None
-    assert audits[0].new_value == 24
+    assert audits[0].new_value == 3
+
+
+async def test_new_entry_leaves_the_meal_count_empty(session, classes, teacher):
+    """Харчування більше не обліковується: нові записи його не чіпають."""
+    entry, _ = await upsert_entry(
+        session, class_id=classes[0].id, d=D, absent_count=3, teacher_id=teacher.id
+    )
+    assert entry.eating_count is None
 
 
 async def test_repeat_same_value_does_not_duplicate_audit(session, classes, teacher):
     for _ in range(3):
         await upsert_entry(
-            session, class_id=classes[0].id, d=D, eating_count=24, teacher_id=teacher.id
+            session, class_id=classes[0].id, d=D, absent_count=3, teacher_id=teacher.id
         )
     assert await session.scalar(select(func.count()).select_from(MealEntry)) == 1
     assert await session.scalar(select(func.count()).select_from(MealEntryAudit)) == 1
 
 
 async def test_correction_updates_in_place_and_logs(session, classes, teacher):
-    await upsert_entry(session, class_id=classes[0].id, d=D, eating_count=24, teacher_id=teacher.id)
+    await upsert_entry(session, class_id=classes[0].id, d=D, absent_count=3, teacher_id=teacher.id)
     entry, updated = await upsert_entry(
         session,
         class_id=classes[0].id,
         d=D,
-        eating_count=26,
+        absent_count=5,
         teacher_id=teacher.id,
         source=EntrySource.ADMIN,
-        reason="перерахували після 2 уроку",
+        reason="двоє прийшли після 2 уроку",
     )
     assert updated
-    assert entry.eating_count == 26
+    assert entry.absent_count == 5
     assert await session.scalar(select(func.count()).select_from(MealEntry)) == 1
 
     audits = list(await session.scalars(select(MealEntryAudit).order_by(MealEntryAudit.id)))
     assert len(audits) == 2
-    assert (audits[1].old_value, audits[1].new_value) == (24, 26)
-    assert audits[1].reason == "перерахували після 2 уроку"
+    assert (audits[1].old_value, audits[1].new_value) == (3, 5)
+    assert audits[1].reason == "двоє прийшли після 2 уроку"
 
 
 async def test_unique_per_class_per_date(session, classes, teacher):
-    await upsert_entry(session, class_id=classes[0].id, d=D, eating_count=24, teacher_id=teacher.id)
-    await upsert_entry(session, class_id=classes[1].id, d=D, eating_count=18, teacher_id=teacher.id)
+    await upsert_entry(session, class_id=classes[0].id, d=D, absent_count=3, teacher_id=teacher.id)
+    await upsert_entry(session, class_id=classes[1].id, d=D, absent_count=1, teacher_id=teacher.id)
     await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 3), eating_count=25, teacher_id=teacher.id
+        session, class_id=classes[0].id, d=date(2026, 9, 3), absent_count=2, teacher_id=teacher.id
     )
     assert await session.scalar(select(func.count()).select_from(MealEntry)) == 3
 
 
 async def test_zero_is_a_valid_answer(session, classes, teacher):
     entry, _ = await upsert_entry(
-        session, class_id=classes[0].id, d=D, eating_count=0, teacher_id=teacher.id
+        session, class_id=classes[0].id, d=D, absent_count=0, teacher_id=teacher.id
     )
-    assert entry.eating_count == 0
+    assert entry.absent_count == 0
     summary = await day_summary(session, D)
     assert summary.statuses[0].submitted   # 0 — це відповідь, а не її відсутність
-    assert summary.total == 0
+    assert summary.absent_total == 0
 
 
 async def test_day_summary_counts_missing(session, classes, teacher):
-    await upsert_entry(session, class_id=classes[0].id, d=D, eating_count=24, teacher_id=teacher.id)
-    await upsert_entry(session, class_id=classes[1].id, d=D, eating_count=18, teacher_id=teacher.id)
+    await upsert_entry(
+        session, class_id=classes[0].id, d=D, absent_count=3, sick_count=2, teacher_id=teacher.id
+    )
+    await upsert_entry(
+        session, class_id=classes[1].id, d=D, absent_count=1, sick_count=1, teacher_id=teacher.id
+    )
 
     summary = await day_summary(session, D)
     assert summary.expected == 3
     assert len(summary.submitted) == 2
     assert [s.school_class.name for s in summary.missing] == ["5-В"]
-    assert summary.total == 42
+    assert summary.absent_total == 4
+    assert summary.sick_total == 3
 
 
 async def test_day_summary_empty_day(session, classes):
+    """Порожній день — це None, а не нуль: дані просто не зібрані."""
     summary = await day_summary(session, D)
-    assert summary.total == 0
+    assert summary.absent_total is None
+    assert summary.sick_total is None
     assert len(summary.missing) == 3
 
 
-async def test_last_known_count_uses_previous_school_day(session, classes, teacher):
+async def test_day_summary_ignores_a_skipped_sick_question(session, classes, teacher):
+    """Пропущене питання про хворих не має читатися як нуль."""
     await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 4), eating_count=24, teacher_id=teacher.id
+        session, class_id=classes[0].id, d=D, absent_count=3, teacher_id=teacher.id
     )
-    # понеділок 07.09 → має підтягнути пʼятницю 04.09
-    assert await last_known_count(session, classes[0].id, date(2026, 9, 7)) == 24
-
-
-async def test_last_known_count_falls_back_to_latest(session, classes, teacher):
-    # запис давній, попереднього навчального дня в базі немає
-    await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 1), eating_count=21, teacher_id=teacher.id
-    )
-    assert await last_known_count(session, classes[0].id, date(2026, 9, 30)) == 21
-
-
-async def test_last_known_count_none_for_new_class(session, classes):
-    assert await last_known_count(session, classes[0].id, D) is None
+    summary = await day_summary(session, D)
+    assert summary.absent_total == 3
+    assert summary.sick_total is None
 
 
 async def test_teacher_class_binding(session, classes, teacher):
@@ -137,16 +140,6 @@ async def test_inactive_class_excluded(session, classes, teacher):
     classes[0].is_active = False
     await session.flush()
     assert await classes_for_teacher(session, teacher.id) == []
-
-
-def test_plural_children():
-    assert plural_children(1) == "1 дитина"
-    assert plural_children(2) == "2 дитини"
-    assert plural_children(5) == "5 дітей"
-    assert plural_children(11) == "11 дітей"
-    assert plural_children(21) == "21 дитина"
-    assert plural_children(24) == "24 дитини"
-    assert plural_children(0) == "0 дітей"
 
 
 # --- розбір назв класів і діапазонів дат ---------------------------------
@@ -299,9 +292,6 @@ async def test_absent_and_sick_are_written_and_journalled(session, classes):
     from school_bot.db.models import MealField
 
     await upsert_entry(
-        session, class_id=classes[0].id, d=MONDAY, eating_count=24, teacher_id=None
-    )
-    await upsert_entry(
         session, class_id=classes[0].id, d=MONDAY, absent_count=3, teacher_id=None
     )
     await upsert_entry(
@@ -309,65 +299,62 @@ async def test_absent_and_sick_are_written_and_journalled(session, classes):
     )
 
     entry = await get_entry(session, classes[0].id, MONDAY)
-    assert (entry.eating_count, entry.absent_count, entry.sick_count) == (24, 3, 2)
+    assert (entry.absent_count, entry.sick_count) == (3, 2)
 
     rows = list(
         await session.scalars(
             select(MealEntryAudit).where(MealEntryAudit.entry_id == entry.id)
         )
     )
-    assert [r.changed_field for r in rows] == [
-        MealField.EATING, MealField.ABSENT, MealField.SICK
-    ]
+    assert [r.changed_field for r in rows] == [MealField.ABSENT, MealField.SICK]
 
 
 async def test_skipping_writes_nothing(session, classes):
     """None означає «не чіпати», а не «стерти»."""
     await upsert_entry(
-        session, class_id=classes[0].id, d=MONDAY, eating_count=24, teacher_id=None
+        session, class_id=classes[0].id, d=MONDAY, absent_count=3, teacher_id=None
     )
     await upsert_entry(
-        session, class_id=classes[0].id, d=MONDAY, absent_count=None, teacher_id=None
+        session, class_id=classes[0].id, d=MONDAY, sick_count=None, teacher_id=None
     )
 
     entry = await get_entry(session, classes[0].id, MONDAY)
-    assert entry.eating_count == 24
-    assert entry.absent_count is None
+    assert entry.absent_count == 3
+    assert entry.sick_count is None
 
 
-async def test_correcting_the_meal_count_keeps_absent_and_sick(session, classes):
+async def test_correcting_absent_keeps_a_smaller_sick(session, classes):
     """Головний інваріант ланцюжка.
 
-    Вчитель виправляє цифру харчування — відсутні й хворі, подані раніше,
-    мають лишитися. Інакше кожна правка тихо стирала б дві інші цифри.
+    Вчитель виправляє кількість відсутніх — цифра хворих, подана раніше,
+    має лишитися. Інакше кожна правка тихо стирала б сусідню цифру.
     """
     await upsert_entry(
-        session, class_id=classes[0].id, d=MONDAY, eating_count=24,
+        session, class_id=classes[0].id, d=MONDAY,
         absent_count=3, sick_count=2, teacher_id=None,
     )
     await upsert_entry(
-        session, class_id=classes[0].id, d=MONDAY, eating_count=26, teacher_id=None
+        session, class_id=classes[0].id, d=MONDAY, absent_count=5, teacher_id=None
     )
 
     entry = await get_entry(session, classes[0].id, MONDAY)
-    assert (entry.eating_count, entry.absent_count, entry.sick_count) == (26, 3, 2)
+    assert (entry.absent_count, entry.sick_count) == (5, 2)
 
 
 async def test_zero_absent_is_a_real_answer(session, classes):
     """0 відсутніх — відповідь, а не відсутність відповіді."""
     await upsert_entry(
-        session, class_id=classes[0].id, d=MONDAY, eating_count=24,
-        absent_count=0, teacher_id=None,
+        session, class_id=classes[0].id, d=MONDAY, absent_count=0, teacher_id=None
     )
     entry = await get_entry(session, classes[0].id, MONDAY)
     assert entry.absent_count == 0 and entry.absent_count is not None
 
 
-async def test_new_entry_requires_the_meal_count(session, classes):
-    """Відсутні без харчування створити запис не можуть — колонка NOT NULL."""
+async def test_new_entry_requires_the_absent_count(session, classes):
+    """Запис із самих хворих не має сенсу: відсутні — перше питання й основа звіту."""
     with pytest.raises(ValueError):
         await upsert_entry(
-            session, class_id=classes[0].id, d=MONDAY, absent_count=3, teacher_id=None
+            session, class_id=classes[0].id, d=MONDAY, sick_count=2, teacher_id=None
         )
 
 
@@ -375,17 +362,17 @@ async def test_was_corrected_distinguishes_first_answer_from_a_fix(session, clas
     from school_bot.domain.meals import was_corrected
 
     entry, _ = await upsert_entry(
-        session, class_id=classes[0].id, d=MONDAY, eating_count=24, teacher_id=None
+        session, class_id=classes[0].id, d=MONDAY, absent_count=3, teacher_id=None
     )
     assert await was_corrected(session, entry.id) is False
 
     await upsert_entry(
-        session, class_id=classes[0].id, d=MONDAY, absent_count=3, teacher_id=None
+        session, class_id=classes[0].id, d=MONDAY, sick_count=2, teacher_id=None
     )
     assert await was_corrected(session, entry.id) is False   # інше поле — не правка
 
     await upsert_entry(
-        session, class_id=classes[0].id, d=MONDAY, eating_count=26, teacher_id=None
+        session, class_id=classes[0].id, d=MONDAY, absent_count=5, teacher_id=None
     )
     assert await was_corrected(session, entry.id) is True
 
@@ -394,13 +381,13 @@ async def test_lowering_absent_clips_sick_to_it(session, classes):
     """Хворих не буває більше за відсутніх — навіть заднім числом.
 
     Знайдено на рев'ю PR #11: вчитель указав 5 відсутніх і 3 хворих, потім
-    повернувся ланцюжком, зменшив відсутніх до 2 і пропустив третій крок.
+    повернувся ланцюжком, зменшив відсутніх до 2 і пропустив другий крок.
     Стеля в клавіатурі тут не рятує — цифру хворих ніхто повторно не вводив.
     """
     from school_bot.db.models import MealField
 
     await upsert_entry(
-        session, class_id=classes[0].id, d=MONDAY, eating_count=24,
+        session, class_id=classes[0].id, d=MONDAY,
         absent_count=5, sick_count=3, teacher_id=None,
     )
     await upsert_entry(
@@ -424,7 +411,7 @@ async def test_lowering_absent_clips_sick_to_it(session, classes):
 
 async def test_lowering_absent_leaves_a_smaller_sick_alone(session, classes):
     await upsert_entry(
-        session, class_id=classes[0].id, d=MONDAY, eating_count=24,
+        session, class_id=classes[0].id, d=MONDAY,
         absent_count=5, sick_count=1, teacher_id=None,
     )
     await upsert_entry(
@@ -437,7 +424,7 @@ async def test_lowering_absent_leaves_a_smaller_sick_alone(session, classes):
 async def test_zero_absent_still_means_zero_sick(session, classes):
     """Нуль відсутніх лишає хворих нулем, а не порожнім."""
     await upsert_entry(
-        session, class_id=classes[0].id, d=MONDAY, eating_count=24,
+        session, class_id=classes[0].id, d=MONDAY,
         absent_count=0, sick_count=0, teacher_id=None,
     )
     entry = await get_entry(session, classes[0].id, MONDAY)

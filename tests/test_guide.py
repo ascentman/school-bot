@@ -38,7 +38,6 @@ def test_every_button_the_guide_shows_still_exists(guide: str):
         *_labels(keyboards.pick_more()),
         *_labels(keyboards.edit_button(1, date(2026, 9, 1))),
         *_labels(keyboards.main_menu(is_admin=False)),
-        *_labels(keyboards.number_pad(1, date(2026, 9, 1), last_known=24, max_children=40)),
         *_labels(keyboards.absent_pad(1, date(2026, 9, 1), current=None, max_children=40)),
         *_labels(keyboards.sick_pad(1, date(2026, 9, 1), current=None, max_absent=3)),
     }
@@ -49,7 +48,6 @@ def test_every_button_the_guide_shows_still_exists(guide: str):
         "✅ Це все",
         "✏️ Виправити",
         "📋 Мої класи",
-        "0 — немає",
         "✏️ Інша цифра",
         "⏭ Пропустити",
     }
@@ -67,6 +65,12 @@ def test_guide_shows_the_configured_prompt_time(guide: str):
     )
     for t in settings.remind_times:
         assert f"{t:%-H:%M}" in guide, f"нагадування о {t:%H:%M} не згадане в пам'ятці"
+
+
+def test_guide_does_not_promise_reminders_that_do_not_come(guide: str):
+    """Нагадувань немає — пам'ятка не має обіцяти, що «бот нагадає»."""
+    if not settings.remind_times:
+        assert "нагадає" not in guide
 
 
 def test_guide_links_to_the_bot(guide: str):

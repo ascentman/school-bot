@@ -7,8 +7,8 @@ from html import escape
 
 from school_bot.config import settings
 from school_bot.db.models import MAX_NAME_LEN
-from school_bot.domain.dates import format_date, plural_children
-from school_bot.reports.day import UA_REPORT_KIND, ReportKind
+from school_bot.domain.dates import format_date
+from school_bot.reports.day import REPORT_TITLE
 
 
 def esc(value: str) -> str:
@@ -29,7 +29,7 @@ NOT_REGISTERED = (
     "Зверніться до адміністратора, щоб отримати запрошення."
 )
 ASK_CONTACT = (
-    "👋 Вітаю! Це бот обліку харчування учнів.\n\n"
+    "👋 Вітаю! Це бот обліку відсутніх учнів.\n\n"
     "Щоб я знайшов вас у списку працівників, натисніть кнопку нижче — "
     "Telegram надішле мені ваш номер телефону.\n\n"
     "<i>Номер потрібен лише для впізнання. Нікуди більше не передається.</i>"
@@ -118,7 +118,7 @@ def welcome(name: str, class_names: list[str], is_admin: bool) -> str:
         # Час береться з конфігу: зашитий у текст, він розходиться з розкладом
         # щойно адміністратор змінить PROMPT_TIME, і вчитель отримує хибну інструкцію.
         f"Щобудня о {settings.prompt_time:%H:%M} я надсилатиму запит "
-        "про кількість дітей на харчуванні.",
+        "про кількість відсутніх учнів.",
         "Відповідь — один дотик по потрібній цифрі.",
     ]
     return "\n".join(lines)
@@ -130,15 +130,7 @@ def welcome(name: str, class_names: list[str], is_admin: bool) -> str:
 def prompt(class_name: str, d: Date) -> str:
     return (
         f"📋 <b>{esc(class_name)}</b> · {format_date(d, with_weekday=True)}\n\n"
-        "Скільки дітей сьогодні харчуються?"
-    )
-
-
-def prompt_absent(class_name: str, d: Date, eating: int) -> str:
-    return (
-        f"✅ <b>{esc(class_name)}</b> · {format_date(d)} — "
-        f"харчуються: <b>{eating}</b>\n\n"
-        "Всього відсутніх?"
+        "Скільки учнів сьогодні відсутні?"
     )
 
 
@@ -153,7 +145,6 @@ def prompt_sick(class_name: str, d: Date, absent: int) -> str:
 def prompt_answered(
     class_name: str,
     d: Date,
-    count: int,
     at: str,
     *,
     edited: bool = False,
@@ -162,14 +153,9 @@ def prompt_answered(
 ) -> str:
     """Підсумок дня. Пропущену цифру показуємо як «—», а не як 0."""
     head = "✏️ Виправлено" if edited else "✅ Записано"
-    # esc() на цифрах виглядає зайвим — вони завжди int. Але цей модуль
-    # рендериться в parse_mode=HTML, і правило «екрануємо все, що підставляємо»
-    # має триматися без винятків: інакше наступне поле, яке стане рядком,
-    # проскочить непоміченим.
-    shown = [esc(str(v)) if v is not None else "—" for v in (absent, sick)]
     return (
-        f"✅ <b>{esc(class_name)}</b> · {format_date(d)} — <b>{plural_children(count)}</b>\n"
-        f"Відсутні: <b>{shown[0]}</b> · з них хворі: <b>{shown[1]}</b>\n"
+        f"✅ <b>{esc(class_name)}</b> · {format_date(d)}\n"
+        f"Відсутні: <b>{_num(absent)}</b> · з них хворі: <b>{_num(sick)}</b>\n"
         f"<i>{head} о {esc(at)}.</i>"
     )
 
@@ -177,19 +163,19 @@ def prompt_answered(
 def reminder(class_name: str, d: Date) -> str:
     return (
         f"⏰ Нагадування: <b>{esc(class_name)}</b> · {format_date(d)}\n\n"
-        "Дані про харчування ще не подані."
+        "Дані про відсутніх ще не подані."
     )
 
 
 TEACHER_HELP = (
     "ℹ️ <b>Як це працює</b>\n\n"
-    "Щобудня вранці я надсилаю запит по кожному вашому класу. Треба лише "
+    "Щобудня вранці я надсилаю один запит по кожному вашому класу. Треба лише "
     "натиснути потрібну цифру — писати нічого не потрібно.\n\n"
-    "Питань три: скільки харчуються, скільки всього відсутніх і скільки з них "
-    "по хворобі. Про хворих питаю, лише якщо відсутні є.\n\n"
-    "• Цифра над сіткою — скільки було минулого разу.\n"
-    "• «⏭ Пропустити» — якщо не знаєте; цифра харчування вже збережена.\n"
+    "Питань два: скільки всього відсутніх і скільки з них по хворобі. "
+    "Про хворих питаю, лише якщо відсутні є.\n\n"
     "• «✏️ Інша цифра» — якщо потрібного числа немає на екрані.\n"
+    "• «⏭ Пропустити» на питанні про хворих — якщо не знаєте; "
+    "кількість відсутніх уже збережена.\n"
     "• «✏️ Виправити» — змінити вже подану цифру за сьогодні.\n\n"
     "Якщо ви видалили повідомлення або хочете подати дані раніше — "
     "натисніть <b>📋 Мої класи</b> або команду /today.\n\n"
@@ -214,7 +200,6 @@ UNKNOWN_INPUT = (
     "або натисніть /help."
 )
 
-MANUAL_ASK = "Надішліть кількість дітей числом (наприклад: <code>27</code>)."
 MANUAL_ASK_ABSENT = "Надішліть кількість відсутніх числом (наприклад: <code>23</code>)."
 MANUAL_ASK_SICK = "Надішліть кількість хворих числом (наприклад: <code>12</code>)."
 MANUAL_CANCELLED = "Скасовано."
@@ -229,17 +214,38 @@ TOAST_SKIPPED = "Пропущено ⏭"
 SICK_EXCEEDS_ABSENT = "❗ Хворих не може бути більше, ніж відсутніх."
 TOAST_STORED = "Збережено ✅"
 NOTHING_TO_EDIT = "Запис не знайдено — можливо, його вже видалили."
+STALE_PROMPT = (
+    "Цей запит застарів: харчування більше не обліковується.\n"
+    "Натисніть «📋 Мої класи» або /today, щоб подати відсутніх за сьогодні."
+)
 DAY_IS_OFF = "Цей день позначено як неробочий, тому запит не надсилався."
 
 
 # --- Зведення й звіти -----------------------------------------------------
 
 
-def digest(d: Date, submitted: int, expected: int, total: int, missing: list[str]) -> str:
+def _num(v: int | None) -> str:
+    """Цифра для показу, або «—» якщо її не подали.
+
+    esc() на int виглядає зайвим, але цей модуль рендериться в parse_mode=HTML,
+    і правило «екрануємо все, що підставляємо» має триматися без винятків:
+    інакше наступне поле, яке стане рядком, проскочить непоміченим.
+    """
+    return "—" if v is None else esc(str(v))
+
+
+def digest(
+    d: Date,
+    submitted: int,
+    expected: int,
+    absent: int | None,
+    sick: int | None,
+    missing: list[str],
+) -> str:
     lines = [
         f"📊 <b>{format_date(d, with_weekday=True)}</b>",
-        f"Подали: <b>{submitted}</b> з {expected}",
-        f"Разом на харчуванні: <b>{plural_children(total)}</b>",
+        f"Подали: <b>{esc(str(submitted))}</b> з {esc(str(expected))}",
+        f"Відсутніх: <b>{_num(absent)}</b> · з них хворі: <b>{_num(sick)}</b>",
     ]
     if missing:
         lines += ["", "❗ Не подали: " + ", ".join(esc(n) for n in missing)]
@@ -248,21 +254,15 @@ def digest(d: Date, submitted: int, expected: int, total: int, missing: list[str
     return "\n".join(lines)
 
 
-def report_ready(kind, report) -> str:
+def report_ready(report) -> str:
     """Короткий супровід до файлу: головні цифри видно ще до відкриття."""
-    head = f"📄 <b>{esc(UA_REPORT_KIND[kind])}</b> · {format_date(report.date)}"
-    if kind is ReportKind.MEALS:
-        body = f"Разом: <b>{plural_children(report.total)}</b>"
-    else:
-        absent = report.absent_total
-        sick = report.sick_total
-        body = (
-            f"Відсутніх: <b>{absent if absent is not None else '—'}</b> · "
-            f"з них хворі: <b>{sick if sick is not None else '—'}</b>"
-        )
-    # Боржники стосуються обох звітів: класи, що не подали нічого, не входять
-    # у суму, тож без цього рядка цифра виглядала б повною, хоч насправді
-    # може бути більшою.
+    head = f"📄 <b>{esc(REPORT_TITLE)}</b> · {format_date(report.date)}"
+    body = (
+        f"Відсутніх: <b>{_num(report.absent_total)}</b> · "
+        f"з них хворі: <b>{_num(report.sick_total)}</b>"
+    )
+    # Класи, що не подали нічого, у суму не входять, тож без цього рядка
+    # цифра виглядала б повною, хоч насправді може бути більшою.
     if report.missing:
         body += f"\n❗ Не подали: {esc(', '.join(report.missing))}"
     return f"{head}\n{body}"
@@ -339,10 +339,10 @@ def classes_added(created: list[str], rejected: list[str]) -> str:
 def report_caption(title: str, total: int, school_days: int, missing: int) -> str:
     caption = (
         f"📅 <b>{esc(title)}</b>\n"
-        f"Разом: <b>{total}</b> порцій за {school_days} навч. дн."
+        f"Разом пропусків: <b>{_num(total)}</b> за {esc(str(school_days))} навч. дн."
     )
     if missing:
-        caption += f"\n⚠️ Незаповнених клітинок: {missing}"
+        caption += f"\n⚠️ Незаповнених клітинок: {esc(str(missing))}"
     return caption
 REPORT_BUILDING = "⏳ Формую звіт…"
 SHEETS_DISABLED = (

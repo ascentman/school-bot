@@ -1,25 +1,20 @@
-"""Щоденний звіт: розклад роздачі, групування класів і PDF.
+"""Щоденний звіт про відсутніх і хворих: склад рядків і PDF.
 
-Звіт читають на місці, звіряючи зі зміною на роздачі, тому найдорожчі помилки
-тут — не падіння, а тихі: клас, що зник із групування, або сума, яка не
+Звіт читають на місці — медсестра й класні керівники, — тому найдорожчі
+помилки тут не падіння, а тихі: клас, що зник із переліку, або сума, яка не
 сходиться з рядками. Саме їх і ловлять ці тести.
 """
 
 from __future__ import annotations
 
-from datetime import date, time
+from datetime import date
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from school_bot.config import BASE_DIR, Settings
 from school_bot.db.models import MealEntry, SchoolClass
-from school_bot.domain.classes import parse_class_name
-from school_bot.domain.slots import parse_meal_slots
 from school_bot.reports.day import (
-    UNSCHEDULED_LABEL,
-    ReportKind,
     build_day_report,
     build_report,
     day_report_filename,
@@ -28,139 +23,47 @@ from school_bot.reports.pdf import render_day_report
 
 DAY = date(2026, 9, 3)
 
-SCHEDULE = "09:45-10:00 = 1-А, 5-В; 08:45-09:00 = 3-Б"
+
+# --- склад звіту -----------------------------------------------------------
 
 
-# --- розбір MEAL_SLOTS -----------------------------------------------------
-
-
-def test_slots_parsed_and_sorted_by_time():
-    slots = parse_meal_slots(SCHEDULE)
-    assert [s.label for s in slots] == ["08:45 – 09:00", "09:45 – 10:00"]
-    assert slots[0].class_names == ("3-Б",)
-    assert slots[1].class_names == ("1-А", "5-В")
-
-
-def test_slots_accept_newlines_as_separator():
-    """Розклад можна записати стовпчиком — так його зручніше правити."""
-    slots = parse_meal_slots("08:45-09:00 = 3-Б\n09:45-10:00 = 1-А")
-    assert len(slots) == 2
-
-
-def test_slot_class_names_are_normalised():
-    """«3б» і «3-Б» — той самий клас, інакше він не знайдеться в базі."""
-    assert parse_meal_slots("08:45-09:00 = 3б, 10 а")[0].class_names == ("3-Б", "10-А")
-
-
-def test_latin_lookalikes_fold_to_cyrillic():
-    """«10-A» з латинською A виглядає як «10-А», але це інший рядок.
-
-    Список класів часто копіюють із чужого документа, де розкладка змішана;
-    без згортання такий клас мовчки випав би зі звіту.
-    """
-    latin = "10-A"  # саме латинська A — так її копіюють із чужих документів
-    assert parse_class_name(latin)[0] == "10-А"
-    assert parse_meal_slots(f"08:45-09:00 = {latin}")[0].class_names == ("10-А",)
-
-
-@pytest.mark.parametrize(
-    "bad",
-    [
-        "08:45-09:00",                      # без класів
-        "3-А, 3-Б",                         # без часу
-        "08:45-09:00 = ",                   # порожня зміна
-        "25:00-26:00 = 3-А",                # неможливий час
-        "09:00-08:45 = 3-А",                # кінець раніше початку
-        "08:45-09:00 = абв",                # не клас
-        "08:45-09:00 = 3-А; 09:15-09:30 = 3-А",  # клас у двох змінах
-    ],
-)
-def test_broken_schedule_is_rejected_loudly(bad: str):
-    """Мовчазно проігнорований рядок = клас, що зник зі звіту непомітно."""
-    with pytest.raises(ValueError):
-        parse_meal_slots(bad)
-
-
-def test_settings_parse_schedule_from_env_string():
-    s = Settings(meal_slots=SCHEDULE)
-    assert [x.start for x in s.meal_slots] == [time(8, 45), time(9, 45)]
-
-
-def test_empty_schedule_is_allowed():
-    assert Settings(meal_slots="").meal_slots == []
-
-
-# --- групування ------------------------------------------------------------
-
-
-async def _with_counts(session: AsyncSession, counts: dict[str, int]) -> None:
-    for name, value in counts.items():
+async def _with_absences(session: AsyncSession, rows: dict[str, tuple[int, int | None]]) -> None:
+    for name, (absent, sick) in rows.items():
         row = await session.scalar(select(SchoolClass).where(SchoolClass.name == name))
-        session.add(MealEntry(class_id=row.id, date=DAY, eating_count=value))
+        session.add(MealEntry(class_id=row.id, date=DAY, absent_count=absent, sick_count=sick))
     await session.flush()
 
 
 @pytest.mark.asyncio
-async def test_classes_are_grouped_in_serving_order(session, classes):
-    """Порядок рядків — порядок роздачі, а не алфавіт."""
-    await _with_counts(session, {"1-А": 10, "3-Б": 20, "5-В": 5})
-    report = await build_day_report(session, DAY, slots=parse_meal_slots(SCHEDULE))
-
-    assert [g.label for g in report.groups] == ["08:45 – 09:00", "09:45 – 10:00"]
-    assert [c.name for c in report.groups[0].cells] == ["3-Б"]
-    assert [c.name for c in report.groups[1].cells] == ["1-А", "5-В"]
-    assert report.groups[1].total == 15
-    assert report.total == 35
-
-
-@pytest.mark.asyncio
-async def test_group_totals_sum_to_the_grand_total(session, classes):
-    """Підсумок не має суперечити рядкам, з яких він складений."""
-    await _with_counts(session, {"1-А": 10, "3-Б": 20, "5-В": 5})
-    report = await build_day_report(session, DAY, slots=parse_meal_slots(SCHEDULE))
-    assert sum(g.total for g in report.groups) == report.total
-
-
-@pytest.mark.asyncio
-async def test_class_outside_the_schedule_is_not_lost(session, classes):
-    """Новий клас, якого ще немає в MEAL_SLOTS, має лишитися у звіті.
-
-    Інакше він зникає мовчки, і сума перестає сходитися з реальністю —
-    помітили б це вже на перевірці.
-    """
-    await _with_counts(session, {"1-А": 10, "3-Б": 20, "5-В": 5})
-    report = await build_day_report(session, DAY, slots=parse_meal_slots("08:45-09:00 = 3-Б"))
-
-    assert [g.label for g in report.groups] == ["08:45 – 09:00", UNSCHEDULED_LABEL]
-    assert {c.name for c in report.groups[1].cells} == {"1-А", "5-В"}
-    assert report.total == 35
-
-
-@pytest.mark.asyncio
-async def test_without_schedule_all_classes_go_into_one_plain_group(session, classes):
-    await _with_counts(session, {"1-А": 10})
+async def test_classes_keep_the_usual_order(session, classes):
+    """Порядок рядків — той самий, що й усюди: клас, паралель, літера."""
+    await _with_absences(session, {"5-В": (1, 1), "1-А": (3, 2), "3-Б": (0, 0)})
     report = await build_day_report(session, DAY)
-    assert len(report.groups) == 1
-    assert report.groups[0].label == ""
+
+    assert [c.name for c in report.cells] == ["1-А", "3-Б", "5-В"]
     assert report.expected == 3
 
 
 @pytest.mark.asyncio
-async def test_schedule_may_mention_a_class_the_school_no_longer_has(session, classes):
-    """Прибраний клас у MEAL_SLOTS не має валити звіт."""
-    report = await build_day_report(session, DAY, slots=parse_meal_slots("08:45-09:00 = 7-Я"))
-    assert [g.label for g in report.groups] == [UNSCHEDULED_LABEL]
+async def test_totals_sum_the_rows(session, classes):
+    """Підсумок не має суперечити рядкам, з яких він складений."""
+    await _with_absences(session, {"1-А": (3, 2), "3-Б": (1, 0), "5-В": (0, 0)})
+    report = await build_day_report(session, DAY)
+
+    assert report.absent_total == sum(c.absent for c in report.cells)
+    assert report.sick_total == sum(c.sick for c in report.cells)
+    assert (report.absent_total, report.sick_total) == (4, 2)
 
 
 @pytest.mark.asyncio
 async def test_missing_class_is_not_counted_as_zero(session, classes):
     """Пропуск і справжній нуль — різні речі, і у звіті вони різні."""
-    await _with_counts(session, {"1-А": 0})
+    await _with_absences(session, {"1-А": (0, 0)})
     report = await build_day_report(session, DAY)
 
     cells = {c.name: c for c in report.cells}
-    assert cells["1-А"].count == 0 and cells["1-А"].submitted
-    assert cells["3-Б"].count is None and not cells["3-Б"].submitted
+    assert cells["1-А"].absent == 0 and cells["1-А"].submitted
+    assert cells["3-Б"].absent is None and not cells["3-Б"].submitted
     assert report.submitted == 1
     assert report.missing == ["3-Б", "5-В"]
 
@@ -174,60 +77,16 @@ def test_report_builds_from_a_snapshot_without_touching_the_database():
     from school_bot.domain.meals import ClassDayStatus, DaySummary
 
     statuses = [
+        ClassDayStatus(school_class=SchoolClass(name="1-А", grade=1, letter="А"),
+                       entry=MealEntry(date=DAY, absent_count=3, sick_count=1)),
         ClassDayStatus(school_class=SchoolClass(name="3-Б", grade=3, letter="Б"), entry=None),
-        ClassDayStatus(
-            school_class=SchoolClass(name="1-А", grade=1, letter="А"),
-            entry=MealEntry(date=DAY, eating_count=17),
-        ),
     ]
-    report = build_report(
-        DaySummary(date=DAY, statuses=statuses), slots=parse_meal_slots(SCHEDULE)
-    )
+    report = build_report(DaySummary(date=DAY, statuses=statuses))
 
     assert report.date == DAY
-    assert report.total == 17
+    assert (report.absent_total, report.sick_total) == (3, 1)
     assert report.missing == ["3-Б"]
-    assert [g.label for g in report.groups] == ["08:45 – 09:00", "09:45 – 10:00"]
-
-
-# --- PDF -------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_pdf_renders_for_a_real_day(session, classes):
-    await _with_counts(session, {"1-А": 10, "3-Б": 20})
-    report = await build_day_report(
-        session, DAY, school_name="44 Школа", slots=parse_meal_slots(SCHEDULE)
-    )
-    pdf = render_day_report(report, ReportKind.MEALS)
-    assert pdf.startswith(b"%PDF")
-    assert len(pdf) > 1000
-
-
-@pytest.mark.asyncio
-async def test_pdf_renders_when_nobody_submitted_anything(session, classes):
-    """День без жодної цифри — звичайний стан о 09:35, не привід падати."""
-    report = await build_day_report(session, DAY, slots=parse_meal_slots(SCHEDULE))
-    assert render_day_report(report, ReportKind.ABSENCE).startswith(b"%PDF")
-
-
-def test_filename_carries_the_date():
-    assert day_report_filename(DAY) == "harchuvannia_2026-09-03.pdf"
-
-
-# --- узгодженість .env.example --------------------------------------------
-
-
-def test_example_schedule_only_mentions_example_classes():
-    """`.env.example` має бути робочим цілим, а не двома незалежними списками.
-
-    Клас у MEAL_SLOTS, якого немає в SCHOOL_CLASSES, дає лише рядок у логах —
-    того, хто копіює приклад під свою школу, це збиває з пантелику.
-    """
-    s = Settings(_env_file=BASE_DIR / ".env.example")
-    scheduled = {name for slot in s.meal_slots for name in slot.class_names}
-    known = {parse_class_name(n)[0] for n in s.school_classes}
-    assert scheduled <= known, f"немає серед SCHOOL_CLASSES: {sorted(scheduled - known)}"
+    assert [c.name for c in report.cells] == ["1-А", "3-Б"]
 
 
 @pytest.mark.asyncio
@@ -235,46 +94,65 @@ async def test_day_report_carries_absent_and_sick(session, classes):
     from school_bot.domain.meals import upsert_entry
 
     await upsert_entry(
-        session, class_id=classes[0].id, d=DAY, eating_count=17,
+        session, class_id=classes[0].id, d=DAY,
         absent_count=3, sick_count=1, teacher_id=None,
     )
     report = await build_day_report(session, DAY)
 
     cell = next(c for c in report.cells if c.name == "1-А")
-    assert (cell.count, cell.absent, cell.sick) == (17, 3, 1)
+    assert (cell.absent, cell.sick) == (3, 1)
     assert (report.absent_total, report.sick_total) == (3, 1)
 
 
 @pytest.mark.asyncio
-async def test_skipping_the_second_question_does_not_make_a_class_missing(session, classes):
-    """Клас подав харчування й пропустив відсутніх — він НЕ боржник."""
+async def test_skipping_the_sick_question_does_not_make_a_class_missing(session, classes):
+    """Клас подав відсутніх і пропустив хворих — він НЕ боржник."""
     from school_bot.domain.meals import upsert_entry
 
     await upsert_entry(
-        session, class_id=classes[0].id, d=DAY, eating_count=17, teacher_id=None
+        session, class_id=classes[0].id, d=DAY, absent_count=3, teacher_id=None
     )
     report = await build_day_report(session, DAY)
 
     cell = next(c for c in report.cells if c.name == "1-А")
     assert cell.submitted is True
-    assert cell.absent is None
+    assert cell.absent == 3
+    assert cell.sick is None
     assert "1-А" not in report.missing
 
 
 @pytest.mark.asyncio
-async def test_totals_stay_empty_when_nobody_reported_absences(session, classes):
-    """Порожньо — не нуль: старі дні не мають тверджувати, що ніхто не хворів."""
-    from school_bot.domain.meals import upsert_entry
-
-    await upsert_entry(
-        session, class_id=classes[0].id, d=DAY, eating_count=17, teacher_id=None
-    )
+async def test_totals_stay_empty_when_nobody_reported_anything(session, classes):
+    """Порожньо — не нуль: день без жодної цифри не стверджує, що всі на місці."""
     report = await build_day_report(session, DAY)
     assert report.absent_total is None
     assert report.sick_total is None
 
 
-# --- звіт про харчування завжди на одному аркуші ---------------------------
+# --- PDF -------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pdf_renders_for_a_real_day(session, classes):
+    await _with_absences(session, {"1-А": (3, 2), "3-Б": (1, 0)})
+    report = await build_day_report(session, DAY, school_name="44 Школа")
+    pdf = render_day_report(report)
+    assert pdf.startswith(b"%PDF")
+    assert len(pdf) > 1000
+
+
+@pytest.mark.asyncio
+async def test_pdf_renders_when_nobody_submitted_anything(session, classes):
+    """День без жодної цифри — звичайний стан о 09:35, не привід падати."""
+    report = await build_day_report(session, DAY)
+    assert render_day_report(report).startswith(b"%PDF")
+
+
+def test_filename_carries_the_date():
+    assert day_report_filename(DAY) == "vidsutni_2026-09-03.pdf"
+
+
+# --- звіт завжди на одному аркуші ------------------------------------------
 
 
 def _pages(pdf: bytes) -> int:
@@ -288,7 +166,7 @@ def _report_with(n_classes: int) -> object:
         ClassDayStatus(
             school_class=SchoolClass(name=f"{i // 3 + 1}-{'АБВ'[i % 3]}",
                                      grade=i // 3 + 1, letter="АБВ"[i % 3]),
-            entry=MealEntry(date=DAY, eating_count=20 + i % 9),
+            entry=MealEntry(date=DAY, absent_count=i % 9, sick_count=i % 4),
         )
         for i in range(n_classes)
     ]
@@ -296,14 +174,33 @@ def _report_with(n_classes: int) -> object:
 
 
 @pytest.mark.parametrize("n", [3, 25, 33, 45])
-def test_meals_report_always_fits_one_page(n):
+def test_report_always_fits_one_page(n):
     """Головна вимога: аркуш один, скільки б не було класів.
 
     Кегль підбирається сам, тож зростання школи має зменшувати шрифт, а не
-    додавати другу сторінку — її просто не понесуть на роздачу.
+    додавати другу сторінку — її просто не понесуть медсестрі.
     """
-    pdf = render_day_report(_report_with(n), ReportKind.MEALS)
+    pdf = render_day_report(_report_with(n))
     assert _pages(pdf) == 1, f"{n} класів дали більше однієї сторінки"
+
+
+@pytest.mark.parametrize("n", [60, 80])
+def test_one_page_holds_for_a_very_large_school(n):
+    """Межа одного аркуша має триматися далеко за межами реальної школи."""
+    assert _pages(render_day_report(_report_with(n))) == 1
+
+
+@pytest.mark.parametrize("n", [100, 200])
+def test_enormous_school_gets_pages_instead_of_nothing(n):
+    """За межею аркуша звіт друкується в кілька сторінок, а не зникає.
+
+    Знайдено на рев'ю PR #13: двоколонковий блок нерозривний, тож reportlab
+    кидав LayoutError, джоб мовчки його ковтав — і того дня не приходило
+    нічого, без жодного натяку чому.
+    """
+    pdf = render_day_report(_report_with(n))   # не має кидати виняток
+    assert pdf.startswith(b"%PDF")
+    assert _pages(pdf) > 1
 
 
 def test_longer_labels_force_a_smaller_font():
@@ -314,23 +211,22 @@ def test_longer_labels_force_a_smaller_font():
     різну ширину. Перевіряємо відношення, а не значення — воно й описує логіку.
     """
     from school_bot.reports.pdf import (
-        KIND_COLUMNS,
+        DAY_HEADERS,
+        DAY_WIDTHS,
         ONE_PAGE_MAX_FONT,
         _best_font,
         _bold_font,
         _cyrillic_font,
     )
 
-    headers, widths = KIND_COLUMNS[ReportKind.MEALS]
     font, bold = _cyrillic_font(), _bold_font()
 
-    short = _best_font([(["1-А", "20"], False)], headers, widths, font, bold)
+    short = _best_font([["1-А", "3", "2"]], DAY_HEADERS, DAY_WIDTHS, font, bold)
     long_label = _best_font(
-        [(["08:45 – 09:00 (перша зміна, молодші класи)", "20"], True)],
-        headers, widths, font, bold,
+        [["11-Б (вечірня форма навчання)", "3", "2"]], DAY_HEADERS, DAY_WIDTHS, font, bold
     )
 
-    assert long_label < short, "довгий підпис зміни має зменшити кегль"
+    assert long_label < short, "довгий підпис класу має зменшити кегль"
     assert short <= ONE_PAGE_MAX_FONT
     assert long_label >= 8, "кегль не має падати до нечитабельного"
 
@@ -338,71 +234,27 @@ def test_longer_labels_force_a_smaller_font():
 def test_header_does_not_hold_back_the_numbers():
     """Шапку читають раз, цифри — весь час, тож вона не має тягнути кегль униз.
 
-    «Харч.» у вузькій колонці інакше обмежував би розмір самих цифр, заради
+    «Хворі» у вузькій колонці інакше обмежував би розмір самих цифр, заради
     яких звіт і роблять.
     """
     from school_bot.reports.pdf import (
+        DAY_WIDTHS,
         HEADER_FONT_CAP,
-        KIND_COLUMNS,
         _best_font,
         _bold_font,
         _cyrillic_font,
     )
 
-    _, widths = KIND_COLUMNS[ReportKind.MEALS]
     font, bold = _cyrillic_font(), _bold_font()
-    rows = [(["1-А", "20"], False)]
+    rows = [["1-А", "3", "2"]]
 
     # Обидві шапки вміщаються при HEADER_FONT_CAP, тож кегль цифр однаковий —
-    # хоча «Харч.» удвічі довша за «Ч» і без стелі тягнула б таблицю вниз.
-    short_header = _best_font(rows, ["К", "Ч"], widths, font, bold)
-    real_header = _best_font(rows, ["Клас", "Харч."], widths, font, bold)
+    # хоча «Хворі» утричі довша за «Х» і без стелі тягнула б таблицю вниз.
+    short_header = _best_font(rows, ["К", "В", "Х"], DAY_WIDTHS, font, bold)
+    real_header = _best_font(rows, ["Клас", "Відс.", "Хворі"], DAY_WIDTHS, font, bold)
 
     assert real_header == short_header, "шапка зменшила кегль цифр"
     assert HEADER_FONT_CAP < short_header
-
-
-def test_columns_never_split_a_serving_slot():
-    """Зміну не можна розірвати між колонками — око шукає її цілою."""
-    from school_bot.reports.pdf import _split_in_two
-
-    rows = [
-        (["08:45 – 09:00", "5"], True),
-        (["1-А", "5"], False),
-        (["09:15 – 09:30", "7"], True),
-        (["2-А", "7"], False),
-    ]
-    left, right = _split_in_two(rows)
-    assert right[0][1] is True, "друга колонка має починатися зі зміни"
-    assert left and right
-
-
-@pytest.mark.parametrize("n", [60, 80])
-def test_one_page_holds_for_a_very_large_school(n):
-    """Межа одного аркуша має триматися далеко за межами реальної школи."""
-    for kind in (ReportKind.MEALS, ReportKind.ABSENCE):
-        assert _pages(render_day_report(_report_with(n), kind)) == 1
-
-
-@pytest.mark.parametrize("n", [100, 200])
-def test_enormous_school_gets_pages_instead_of_nothing(n):
-    """За межею аркуша звіт друкується в кілька сторінок, а не зникає.
-
-    Знайдено на рев'ю PR #13: двоколонковий блок нерозривний, тож reportlab
-    кидав LayoutError, джоб мовчки його ковтав — і того дня не приходило ні
-    PDF, ні листа, без жодного натяку чому.
-    """
-    for kind in (ReportKind.MEALS, ReportKind.ABSENCE):
-        pdf = render_day_report(_report_with(n), kind)   # не має кидати виняток
-        assert pdf.startswith(b"%PDF")
-        assert _pages(pdf) > 1
-
-
-@pytest.mark.parametrize("n", [3, 25, 33, 45])
-def test_absence_report_also_fits_one_page(n):
-    """Той самий аркуш і для відсутніх: його теж друкують."""
-    pdf = render_day_report(_report_with(n), ReportKind.ABSENCE)
-    assert _pages(pdf) == 1, f"{n} класів дали більше однієї сторінки"
 
 
 def test_table_fits_the_printed_area():
@@ -415,38 +267,35 @@ def test_table_fits_the_printed_area():
     """
     from school_bot.reports.pdf import (
         COLUMN_GAP,
+        DAY_WIDTHS,
         HALF_WIDTH,
-        KIND_COLUMNS,
         USABLE_WIDTH,
     )
 
     assert 2 * (HALF_WIDTH + COLUMN_GAP) <= USABLE_WIDTH
-    for kind, (_, widths) in KIND_COLUMNS.items():
-        assert sum(widths) <= HALF_WIDTH, f"{kind.value}: колонки ширші за половину"
+    assert sum(DAY_WIDTHS) <= HALF_WIDTH, "колонки ширші за половину аркуша"
 
 
-def test_single_serving_slot_keeps_a_header_in_both_columns():
-    """Школа з однією зміною: права колонка не має лишитися без підпису.
+def test_split_keeps_both_columns_in_order():
+    """Розріз посередині лишає обидві половини впорядкованими.
 
-    Знайдено на рев'ю PR #13 — межі груп не було, і код падав у наївний розріз
-    посередині, лишаючи половину класів без заголовка.
+    Клас шукають очима зверху вниз у лівій колонці, потім у правій, тож
+    порядок у кожній половині має лишатися тим самим, що й у звіті.
     """
     from school_bot.reports.pdf import _split_in_two
 
-    rows = [(["08:45 – 09:00", "50"], True)]
-    rows += [([f"{i}-А", "10"], False) for i in range(1, 11)]
-
+    rows = [[f"{i}-А", "1", "0"] for i in range(1, 11)]
     left, right = _split_in_two(rows)
-    assert left[0][1] is True
-    assert right[0][1] is True, "друга колонка без заголовка зміни"
-    assert right[0][0][0] == "08:45 – 09:00"
+
+    assert len(left) + len(right) == 10
+    assert left + right == rows
 
 
-def test_no_slots_at_all_still_splits():
-    """Без MEAL_SLOTS заголовків немає взагалі — розріз має просто спрацювати."""
+def test_odd_number_of_classes_splits_without_losing_one():
+    """Непарна кількість класів — найлегший спосіб загубити рядок на розрізі."""
     from school_bot.reports.pdf import _split_in_two
 
-    rows = [([f"{i}-А", "10"], False) for i in range(1, 11)]
+    rows = [[f"{i}-А", "1", "0"] for i in range(1, 8)]
     left, right = _split_in_two(rows)
-    assert len(left) + len(right) == 10
-    assert left and right
+    assert left + right == rows
+    assert len(left) == 4 and len(right) == 3

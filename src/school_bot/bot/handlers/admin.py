@@ -36,7 +36,7 @@ from school_bot.domain.teachers import clean_name, free_number, import_teachers
 from school_bot.reports.matrix import available_months, build_month_matrices
 from school_bot.reports.pdf import render_pdf
 from school_bot.reports.xlsx import render_xlsx
-from school_bot.scheduler.jobs import day_report_attachments, sync_all_months
+from school_bot.scheduler.jobs import day_report_attachment, sync_all_months
 
 log = logging.getLogger(__name__)
 router = Router(name="admin")
@@ -65,6 +65,11 @@ class DaysOff(StatesGroup):
     range_input = State()
 
 
+def _num(v: int | None) -> str:
+    """Пропущену цифру показуємо як «—», а не як 0."""
+    return "—" if v is None else str(v)
+
+
 # --- 📊 Сьогодні ----------------------------------------------------------
 
 
@@ -82,14 +87,17 @@ async def today_summary(message: Message, session: AsyncSession) -> None:
             d,
             submitted=len(summary.submitted),
             expected=summary.expected,
-            total=summary.total,
+            absent=summary.absent_total,
+            sick=summary.sick_total,
             missing=[n for _, n in missing],
         )
     ]
     if summary.submitted:
         lines += ["", "<b>Подано:</b>"]
         lines += [
-            f"  {texts.esc(s.school_class.name)} — {s.count}" for s in summary.submitted
+            f"  {texts.esc(s.school_class.name)} — відсутні {_num(s.absent)}"
+            f" · хворі {_num(s.sick)}"
+            for s in summary.submitted
         ]
 
     await message.answer(
@@ -97,9 +105,10 @@ async def today_summary(message: Message, session: AsyncSession) -> None:
         reply_markup=keyboards.missing_classes(d, missing) if missing else None,
     )
 
-    # Обидва звіти — ті самі, що приходять уранці. Кнопка має показувати те,
-    # що людина вже звикла бачити, а не третій, окремий вигляд.
-    for document in day_report_attachments(summary):
+    # Той самий звіт, що приходить уранці. Кнопка має показувати те, що людина
+    # вже звикла бачити, а не другий, окремий вигляд.
+    document = day_report_attachment(summary)
+    if document is not None:
         await message.answer_document(document)
 
 
@@ -127,8 +136,8 @@ async def send_report(
         school_name=settings.school_name,
         today=today(),
     )
-    matrix = matrices[0]      # харчування — для підпису й підсумків
-    stem = f"harchuvannia_{callback_data.year}-{callback_data.month:02d}"
+    matrix = matrices[0]      # відсутні — для підпису й підсумків
+    stem = f"vidsutni_{callback_data.year}-{callback_data.month:02d}"
     caption = texts.report_caption(
         matrix.title, matrix.grand_total, len(matrix.elapsed_school_days), matrix.missing_total
     )
@@ -565,10 +574,9 @@ async def settings_view(message: Message, session: AsyncSession) -> None:
         f"Часовий пояс: {settings.timezone}",
         f"Запит: <b>{settings.prompt_time:%H:%M}</b> (Пн–Пт)",
         "Нагадування: <b>"
-        + ", ".join(f"{t:%H:%M}" for t in settings.remind_times)
+        + (", ".join(f"{t:%H:%M}" for t in settings.remind_times) or "немає")
         + "</b>",
-        f"Звіт про харчування: <b>{settings.meals_report_time:%H:%M}</b>",
-        f"Звіт про відсутніх: <b>{settings.absence_report_time:%H:%M}</b>",
+        f"Звіт про відсутніх: <b>{settings.report_time:%H:%M}</b> (лише Telegram)",
         f"Активних класів: {len(classes)}",
         "",
     ]

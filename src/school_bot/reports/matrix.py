@@ -17,16 +17,18 @@ from school_bot.db.models import DayKind, MealEntry, MealField, NonSchoolDay
 from school_bot.domain.dates import format_month, weekday_name
 from school_bot.domain.meals import active_classes
 
-# Підпис метрики у назві аркуша й у заголовку. Харчування лишається без
-# суфікса: це основна таблиця, і вона має виглядати як раніше.
+# Метрики, які обліковуються. Харчування сюди не входить: його більше не
+# збирають і не друкують, тож нові аркуші по ньому не будуються. Наявні
+# вкладки «2026-09» у Google-таблиці лишаються як є — просто не оновлюються.
+METRICS = (MealField.ABSENT, MealField.SICK)
+
+# Підпис метрики у назві аркуша й у заголовку.
 UA_METRIC = {
-    MealField.EATING: "",
     MealField.ABSENT: "відсутні",
     MealField.SICK: "хворі",
 }
 
 _METRIC_COLUMN = {
-    MealField.EATING: "eating_count",
     MealField.ABSENT: "absent_count",
     MealField.SICK: "sick_count",
 }
@@ -69,10 +71,9 @@ class ClassRow:
     """Рядок класу за місяць.
 
     `values` тримає лише НЕПОРОЖНІ цифри обраної метрики, а `submitted` — дні,
-    коли запис узагалі існує. Для харчування ці множини збігаються (колонка
-    NOT NULL), а для відсутніх і хворих — ні: клас міг подати харчування й
-    пропустити друге питання. Тому «дірка» рахується по `submitted`, інакше
-    аркуш «Відсутні» був би суцільно червоний.
+    коли запис узагалі існує. Для хворих ці множини не збігаються: клас міг
+    подати відсутніх і пропустити друге питання. Тому «дірка» рахується по
+    `submitted`, інакше аркуш «Хворі» був би суцільно червоний.
     """
 
     class_id: int
@@ -109,7 +110,7 @@ class MonthMatrix:
     rows: list[ClassRow]
     school_name: str
     today: Date | None = None
-    metric: MealField = MealField.EATING
+    metric: MealField = MealField.ABSENT
 
     @property
     def title(self) -> str:
@@ -117,11 +118,7 @@ class MonthMatrix:
 
     @property
     def heading(self) -> str:
-        """Заголовок таблиці. Для харчування — рівно такий, як був завжди."""
-        base = "Облік харчування учнів"
-        if self.metric is not MealField.EATING:
-            base = f"{base} — {UA_METRIC[self.metric]}"
-        return f"{base} — {self.title}"
+        return f"Облік відсутніх учнів — {UA_METRIC[self.metric]} — {self.title}"
 
     @property
     def school_days(self) -> list[DayColumn]:
@@ -140,8 +137,8 @@ class MonthMatrix:
     def is_gap(self, row: ClassRow, col: DayColumn) -> bool:
         """Пропущений навчальний день — те, що підсвічується червоним.
 
-        Червоне означає «клас того дня не подав нічого», однаково на всіх
-        трьох аркушах. Пропущене друге питання дірою не є: запис поданий,
+        Червоне означає «клас того дня не подав нічого», однаково на обох
+        аркушах. Пропущене питання про хворих дірою не є: запис поданий,
         просто цієї цифри в ньому немає.
         """
         return (
@@ -157,7 +154,7 @@ class MonthMatrix:
         """Сума за день, або None якщо жоден клас ще не подав.
 
         Порожня клітинка і справжній нуль — різні речі: «0» у звіті означає,
-        що того дня ніхто не харчувався, а не що дані ще не зібрані.
+        що того дня не було відсутніх, а не що дані ще не зібрані.
         """
         if not self.has_data(d):
             return None
@@ -196,8 +193,8 @@ def _project(
 ) -> MonthMatrix:
     """Розкласти вже прочитані записи в матрицю однієї метрики.
 
-    Без запитів до БД: три аркуші місячного звіту будуються з одних і тих
-    самих рядків, тож читати їх тричі немає потреби.
+    Без запитів до БД: обидва аркуші місячного звіту будуються з одних і тих
+    самих рядків, тож читати їх двічі немає потреби.
     """
     column = _METRIC_COLUMN[metric]
     by_class: dict[int, dict[Date, int]] = {c.id: {} for c in classes}
@@ -267,7 +264,7 @@ async def build_month_matrix(
     *,
     school_name: str = "",
     today: Date | None = None,
-    metric: MealField = MealField.EATING,
+    metric: MealField = MealField.ABSENT,
 ) -> MonthMatrix:
     columns, classes, entries = await _read_month(session, year, month)
     return _project(
@@ -284,10 +281,10 @@ async def build_month_matrices(
     school_name: str = "",
     today: Date | None = None,
 ) -> list[MonthMatrix]:
-    """Усі три метрики за місяць — за одне читання БД.
+    """Обидві метрики за місяць — за одне читання БД.
 
-    Порядок фіксований: харчування першим, бо саме воно лишається основною
-    таблицею (перший аркуш, перша сторінка, перша вкладка).
+    Порядок фіксований: відсутні першими, бо саме вони — основна таблиця
+    (перший аркуш, перша сторінка, перша вкладка), а хворі — її уточнення.
     """
     columns, classes, entries = await _read_month(session, year, month)
     return [
@@ -295,7 +292,7 @@ async def build_month_matrices(
             year, month, columns, classes, entries,
             metric=m, school_name=school_name, today=today,
         )
-        for m in (MealField.EATING, MealField.ABSENT, MealField.SICK)
+        for m in METRICS
     ]
 
 

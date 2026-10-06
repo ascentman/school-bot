@@ -18,7 +18,7 @@ async def _filled(session, classes, teacher):
     for day, counts in {1: (24, 18, 20), 2: (22, 19, 21), 3: (25, 18, 20)}.items():
         for cls, n in zip(classes, counts, strict=True):
             await upsert_entry(
-                session, class_id=cls.id, d=date(2026, 9, day), eating_count=n,
+                session, class_id=cls.id, d=date(2026, 9, day), absent_count=n,
                 teacher_id=teacher.id,
             )
     return await build_month_matrix(session, 2026, 9, school_name="Ліцей №1")
@@ -28,8 +28,8 @@ async def test_xlsx_structure_and_totals(session, classes, teacher):
     matrix = await _filled(session, classes, teacher)
     ws = load_workbook(BytesIO(render_xlsx(matrix))).active
 
-    assert ws.title == "2026-09"
-    assert ws["A1"].value == "Облік харчування учнів — вересень 2026"
+    assert ws.title == "2026-09 відсутні"
+    assert ws["A1"].value == "Облік відсутніх учнів — відсутні — вересень 2026"
     assert ws["A2"].value == "Ліцей №1"
 
     # шапка: колонка B = 1 вересня, остання колонка даних = 30 вересня
@@ -81,7 +81,7 @@ async def test_pdf_empty_month(session, classes):
 
 async def test_xlsx_does_not_flag_future_days(session, classes, teacher):
     await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 1), eating_count=24, teacher_id=teacher.id
+        session, class_id=classes[0].id, d=date(2026, 9, 1), absent_count=24, teacher_id=teacher.id
     )
     matrix = await build_month_matrix(session, 2026, 9, today=date(2026, 9, 2))
     ws = load_workbook(BytesIO(render_xlsx(matrix))).active
@@ -103,7 +103,7 @@ async def test_totals_row_never_contradicts_the_rows_above(session, classes, tea
     """
     saturday = date(2026, 9, 5)
     await upsert_entry(
-        session, class_id=classes[0].id, d=saturday, eating_count=20, teacher_id=teacher.id
+        session, class_id=classes[0].id, d=saturday, absent_count=20, teacher_id=teacher.id
     )
     matrix = await build_month_matrix(session, 2026, 9)
 
@@ -117,7 +117,7 @@ async def test_totals_row_never_contradicts_the_rows_above(session, classes, tea
 
 
 async def test_workbook_has_a_sheet_per_metric(session, classes):
-    """Аркуш харчування лишається першим і зберігає стару назву."""
+    """Аркуш відсутніх — перший; назви лишаються сортованими за місяцем."""
     from openpyxl import load_workbook
 
     from school_bot.reports.matrix import build_month_matrices
@@ -126,10 +126,8 @@ async def test_workbook_has_a_sheet_per_metric(session, classes):
     ms = await build_month_matrices(session, 2026, 9, school_name="Ліцей №1")
     wb = load_workbook(BytesIO(render_xlsx(*ms)))
 
-    assert [w.title for w in wb.worksheets] == [
-        "2026-09", "2026-09 відсутні", "2026-09 хворі"
-    ]
-    assert wb.active.title == "2026-09"
+    assert [w.title for w in wb.worksheets] == ["2026-09 відсутні", "2026-09 хворі"]
+    assert wb.active.title == "2026-09 відсутні"
 
 
 async def test_monthly_pdf_has_a_page_per_metric(session, classes):
@@ -139,4 +137,4 @@ async def test_monthly_pdf_has_a_page_per_metric(session, classes):
     ms = await build_month_matrices(session, 2026, 9, school_name="Ліцей №1")
     data = render_pdf(*ms)
     assert data.startswith(b"%PDF-")
-    assert data.count(b"/Type /Page") - data.count(b"/Type /Pages") == 3
+    assert data.count(b"/Type /Page") - data.count(b"/Type /Pages") == 2

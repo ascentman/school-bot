@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date
-
-import pytest
-
 from school_bot.db.models import DayKind, SchoolClass, Teacher
 from school_bot.domain.calendar import mark_range
 from school_bot.domain.meals import upsert_entry
@@ -21,6 +17,14 @@ async def test_prompt_sends_one_message_per_class(bot, maker, school):
     assert len(bot.to(2002)) == 1
     assert "1-А" in bot.to(1001)[0].text
     assert "3-Б" in bot.to(1001)[1].text
+
+
+async def test_prompt_asks_about_absences(bot, maker, school):
+    """Єдине питання запиту — скільки відсутніх; харчування не згадується."""
+    await jobs.daily_prompt(bot, maker, MONDAY)
+    text = bot.to(1001)[0].text
+    assert "відсутн" in text.lower()
+    assert "харчу" not in text.lower()
 
 
 async def test_prompt_silent_on_weekend(bot, maker, school):
@@ -42,7 +46,7 @@ async def test_force_overrides_calendar(bot, maker, school):
 async def test_prompt_skips_class_that_already_submitted(bot, maker, school):
     async with maker() as s:
         await upsert_entry(
-            s, class_id=school["classes"][0], d=MONDAY, eating_count=24,
+            s, class_id=school["classes"][0], d=MONDAY, absent_count=2,
             teacher_id=school["maria"],
         )
         await s.commit()
@@ -67,10 +71,15 @@ async def test_prompt_skips_inactive_teacher(bot, maker, school):
     assert bot.to(1001) == []
 
 
-async def test_prompt_keyboard_centres_on_last_value(bot, maker, school):
+async def test_prompt_keyboard_starts_at_zero_without_a_hint(bot, maker, school):
+    """Кількість відсутніх скаче день у день, тож «як минулого разу» тут немає.
+
+    Натомість 0 стоїть першим: це найчастіша відповідь, і вона має бути
+    доступна одним дотиком.
+    """
     async with maker() as s:
         await upsert_entry(
-            s, class_id=school["classes"][0], d=date(2026, 9, 4), eating_count=27,
+            s, class_id=school["classes"][0], d=MONDAY.replace(day=4), absent_count=7,
             teacher_id=school["maria"],
         )
         await s.commit()
@@ -78,17 +87,29 @@ async def test_prompt_keyboard_centres_on_last_value(bot, maker, school):
     await jobs.daily_prompt(bot, maker, MONDAY)
     kb = bot.to(1001)[0].markup
     labels = [b.text for row in kb.inline_keyboard for b in row]
-    assert "↩︎ Як минулого разу: 27" in labels
-    assert "27" in labels
+    assert labels[0] == "0"
+    assert not any("минулого разу" in label for label in labels)
+    assert "✏️ Інша цифра" in labels
+
+
+async def test_prompt_keyboard_has_no_skip_button(bot, maker, school):
+    """Пропустити перше питання означало б не подати нічого."""
+    await jobs.daily_prompt(bot, maker, MONDAY)
+    kb = bot.to(1001)[0].markup
+    labels = [b.text for row in kb.inline_keyboard for b in row]
+    assert not any("Пропустити" in label for label in labels)
 
 
 # --- remind ---------------------------------------------------------------
+#
+# Нагадування вимкнені в конфігу (REMIND_TIMES порожній), але сам механізм
+# лишається: щоб повернути їх, досить вписати час у .env.
 
 
 async def test_remind_only_to_those_who_did_not_answer(bot, maker, school):
     async with maker() as s:
         await upsert_entry(
-            s, class_id=school["classes"][0], d=MONDAY, eating_count=24,
+            s, class_id=school["classes"][0], d=MONDAY, absent_count=2,
             teacher_id=school["maria"],
         )
         await s.commit()
@@ -103,7 +124,7 @@ async def test_remind_silent_when_everyone_answered(bot, maker, school):
     async with maker() as s:
         for class_id in school["classes"]:
             await upsert_entry(
-                s, class_id=class_id, d=MONDAY, eating_count=20, teacher_id=school["maria"]
+                s, class_id=class_id, d=MONDAY, absent_count=1, teacher_id=school["maria"]
             )
         await s.commit()
     assert await jobs.remind(bot, maker, MONDAY) == 0
@@ -113,159 +134,122 @@ async def test_remind_silent_on_weekend(bot, maker, school):
     assert await jobs.remind(bot, maker, SATURDAY) == 0
 
 
-# --- щоденні звіти --------------------------------------------------------
-#
-# Два окремі звіти замість одного зведення: харчування о 09:40 (його чекає
-# кухня), відсутні о 09:50. Тіло в них спільне, тож більшість перевірок
-# ганяємо по обох одразу.
+async def test_no_reminders_are_scheduled_by_default(bot, maker, school):
+    """Школа просила рівно одне повідомлення на день."""
+    keys = [k for k, _, _ in jobs.daily_plan()]
+    assert not any(k.startswith("remind") for k in keys)
 
 
-REPORTS = [jobs.meals_report, jobs.absence_report]
+# --- щоденний звіт --------------------------------------------------------
 
 
-@pytest.mark.parametrize("job", REPORTS)
-async def test_report_goes_only_to_admins(bot, maker, school, job):
+async def test_report_goes_only_to_admins(bot, maker, school):
     async with maker() as s:
         await upsert_entry(
-            s, class_id=school["classes"][0], d=MONDAY, eating_count=24,
+            s, class_id=school["classes"][0], d=MONDAY,
             absent_count=2, teacher_id=school["maria"],
         )
         await s.commit()
 
-    assert await job(bot, maker, MONDAY) == 1
+    assert await jobs.day_report(bot, maker, MONDAY) == 1
     assert bot.to(1001) == []          # вчителю звіти не йдуть
     assert bot.to(2002)
 
 
-async def test_meals_report_names_the_classes_that_did_not_submit(bot, maker, school):
+async def test_report_shows_absent_and_sick(bot, maker, school):
     async with maker() as s:
         await upsert_entry(
-            s, class_id=school["classes"][0], d=MONDAY, eating_count=24,
-            teacher_id=school["maria"],
-        )
-        await s.commit()
-
-    await jobs.meals_report(bot, maker, MONDAY)
-    text = bot.to(2002)[0].text
-    assert "3-Б" in text and "5-В" in text
-
-
-async def test_absence_report_shows_absent_and_sick(bot, maker, school):
-    async with maker() as s:
-        await upsert_entry(
-            s, class_id=school["classes"][0], d=MONDAY, eating_count=24,
+            s, class_id=school["classes"][0], d=MONDAY,
             absent_count=3, sick_count=1, teacher_id=school["maria"],
         )
         await s.commit()
 
-    await jobs.absence_report(bot, maker, MONDAY)
+    await jobs.day_report(bot, maker, MONDAY)
     text = bot.to(2002)[0].text
     assert "Відсутніх" in text and "3" in text
+    assert "харчу" not in text.lower()
 
 
-@pytest.mark.parametrize(
-    "job,fname",
-    [(jobs.meals_report, "harchuvannia_2026-09-07.pdf"),
-     (jobs.absence_report, "vidsutni_2026-09-07.pdf")],
-)
-async def test_each_report_attaches_its_own_file(bot, maker, school, job, fname):
-    await job(bot, maker, MONDAY)
-    assert [d.filename for d in bot.docs_to(2002)] == [fname]
+async def test_report_names_the_classes_that_did_not_submit(bot, maker, school):
+    """Медсестра має бачити, що дані неповні, а не лише підсумкову цифру."""
+    async with maker() as s:
+        await upsert_entry(
+            s, class_id=school["classes"][0], d=MONDAY,
+            absent_count=2, sick_count=1, teacher_id=school["maria"],
+        )
+        await s.commit()
+
+    await jobs.day_report(bot, maker, MONDAY)
+    text = bot.to(2002)[0].text
+    assert "Не подали" in text and "3-Б" in text and "5-В" in text
+
+
+async def test_report_attaches_the_pdf(bot, maker, school):
+    await jobs.day_report(bot, maker, MONDAY)
+    assert [d.filename for d in bot.docs_to(2002)] == ["vidsutni_2026-09-07.pdf"]
     assert bot.docs_to(1001) == []
 
 
-@pytest.mark.parametrize("job", REPORTS)
-async def test_report_survives_a_failing_render(bot, maker, school, monkeypatch, job):
+async def test_report_survives_a_failing_render(bot, maker, school, monkeypatch):
     """Збій рендеру коштує файл, а не весь джоб."""
-    def boom(report, kind):
+    def boom(report):
         raise RuntimeError("ReportLab не зміг")
 
     monkeypatch.setattr(jobs, "render_day_report", boom)
 
-    assert await job(bot, maker, MONDAY) == 1
+    assert await jobs.day_report(bot, maker, MONDAY) == 1
     assert bot.to(2002)[0].text          # текст усе одно дійшов
     assert bot.documents == []
 
 
-@pytest.mark.parametrize("job", REPORTS)
-async def test_report_survives_a_failing_send(maker, school, job):
+async def test_report_survives_a_failing_send(maker, school):
     class NoDocumentsBot(FakeBot):
         async def send_document(self, chat_id, document, **kwargs):
             raise RuntimeError("Telegram відмовив")
 
     bot = NoDocumentsBot()
-    assert await job(bot, maker, MONDAY) == 1
+    assert await jobs.day_report(bot, maker, MONDAY) == 1
     assert bot.to(2002)[0].text
 
 
-async def test_reports_are_marked_separately(bot, maker, school):
-    """Два джоби — два маркери, інакше догоняння пропустило б один зі звітів."""
-    await jobs.meals_report(bot, maker, MONDAY)
-
+async def test_report_is_marked_as_run(bot, maker, school):
+    await jobs.day_report(bot, maker, MONDAY)
     async with maker() as s:
-        assert await jobs.has_run(s, "report:meals", MONDAY)
-        assert not await jobs.has_run(s, "report:absence", MONDAY)
-
-    await jobs.absence_report(bot, maker, MONDAY)
-    async with maker() as s:
-        assert await jobs.has_run(s, "report:absence", MONDAY)
+        assert await jobs.has_run(s, "report", MONDAY)
 
 
-async def test_both_reports_are_in_the_daily_plan():
-    keys = [k for k, _, _ in jobs.daily_plan()]
-    assert "report:meals" in keys and "report:absence" in keys
-    times = {k: t for k, t, _ in jobs.daily_plan()}
-    assert times["report:meals"] < times["report:absence"]
+async def test_report_is_in_the_daily_plan_after_the_prompt():
+    plan = jobs.daily_plan()
+    keys = [k for k, _, _ in plan]
+    assert keys == ["prompt", "report"]
+
+    times = {k: t for k, t, _ in plan}
+    assert times["prompt"] < times["report"], "звіт не має йти раніше запиту"
 
 
-async def test_reports_email_their_own_kind(bot, maker, school, monkeypatch):
-    """Кожен звіт іде поштою під своїм видом, а не обидва як харчування."""
-    from school_bot.reports import mailer
-    from school_bot.reports.day import ReportKind
-
-    posted: list = []
-
-    async def fake_send(report, pdf, *, kind=ReportKind.MEALS):
-        posted.append(kind)
-        return True
-
-    monkeypatch.setattr(mailer, "safe_send_day_report", fake_send)
-    await jobs.meals_report(bot, maker, MONDAY)
-    await jobs.absence_report(bot, maker, MONDAY)
-
-    assert posted == [ReportKind.MEALS, ReportKind.ABSENCE]
-
-
-async def test_reports_do_not_email_when_channel_is_off(bot, maker, school):
-    from school_bot.config import settings
-
-    assert not settings.email_enabled
-    assert await jobs.meals_report(bot, maker, MONDAY) == 1
-
-
-async def test_one_broken_render_does_not_lose_the_other_report(maker, school, monkeypatch):
-    """Кнопка «Сьогодні»: зламаний звіт має коштувати свій файл, а не обидва.
-
-    Знайдено на рев'ю PR #13 — обидва рендери стояли під одним try/except,
-    тож збій другого забирав з собою вже готовий перший.
-    """
+async def test_broken_render_costs_the_attachment_not_the_digest(maker, school, monkeypatch):
+    """Кнопка «Сьогодні»: зламаний рендер не має зривати саме зведення."""
     from school_bot.domain.meals import day_summary
-    from school_bot.reports.day import ReportKind
 
-    real = jobs.render_day_report
+    def boom(report):
+        raise RuntimeError("ReportLab не зміг")
 
-    def half_broken(report, kind):
-        if kind is ReportKind.ABSENCE:
-            raise RuntimeError("ReportLab не зміг")
-        return real(report, kind)
-
-    monkeypatch.setattr(jobs, "render_day_report", half_broken)
+    monkeypatch.setattr(jobs, "render_day_report", boom)
 
     async with maker() as s:
         summary = await day_summary(s, MONDAY)
-    docs = jobs.day_report_attachments(summary)
+    assert jobs.day_report_attachment(summary) is None
 
-    assert [d.filename for d in docs] == ["harchuvannia_2026-09-07.pdf"]
+
+async def test_attachment_is_the_same_file_as_the_morning_report(maker, school):
+    """Кнопка має показувати те, що людина вже звикла бачити вранці."""
+    from school_bot.domain.meals import day_summary
+
+    async with maker() as s:
+        summary = await day_summary(s, MONDAY)
+    document = jobs.day_report_attachment(summary)
+    assert document is not None
+    assert document.filename == "vidsutni_2026-09-07.pdf"
 
 
 async def test_report_tells_admins_when_there_are_no_classes(bot, maker, school):
@@ -278,25 +262,11 @@ async def test_report_tells_admins_when_there_are_no_classes(bot, maker, school)
         await s.execute(update(SchoolClass).values(is_active=False))
         await s.commit()
 
-    assert await jobs.meals_report(bot, maker, MONDAY) == 0
+    assert await jobs.day_report(bot, maker, MONDAY) == 0
     assert bot.to(2002), "адмін мав отримати попередження, а не тишу"
 
     async with maker() as s:
-        assert await jobs.has_run(s, "report:meals", MONDAY)
-
-
-async def test_absence_report_also_names_missing_classes(bot, maker, school):
-    """Медсестра має бачити, що дані неповні, а не лише підсумкову цифру."""
-    async with maker() as s:
-        await upsert_entry(
-            s, class_id=school["classes"][0], d=MONDAY, eating_count=24,
-            absent_count=2, sick_count=1, teacher_id=school["maria"],
-        )
-        await s.commit()
-
-    await jobs.absence_report(bot, maker, MONDAY)
-    text = bot.to(2002)[0].text
-    assert "Не подали" in text and "3-Б" in text
+        assert await jobs.has_run(s, "report", MONDAY)
 
 
 # --- стійкість ------------------------------------------------------------

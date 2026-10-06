@@ -23,14 +23,12 @@ FIRST_DATA_COL = 2
 
 
 def sheet_title(matrix: MonthMatrix) -> str:
-    """Назва аркуша: «2026-09», «2026-09 відсутні», «2026-09 хворі».
+    """Назва аркуша: «2026-09 відсутні», «2026-09 хворі».
 
-    Суфікс, а не окрема схема іменування: базова назва лишається сортованою
-    й такою самою, як була, тож аркуш харчування нікуди не «переїжджає».
+    Суфікс після дати, а не перед: так аркуші лишаються відсортованими за
+    місяцем, і сусідні місяці стоять поруч, а не розʼїжджаються по метриках.
     """
-    base = f"{matrix.year}-{matrix.month:02d}"
-    suffix = UA_METRIC[matrix.metric]
-    return f"{base} {suffix}" if suffix else base
+    return f"{matrix.year}-{matrix.month:02d} {UA_METRIC[matrix.metric]}"
 
 
 def _fill_sheet(ws, matrix: MonthMatrix) -> None:
@@ -140,7 +138,7 @@ def _fill_sheet(ws, matrix: MonthMatrix) -> None:
 
 
 def build_workbook(*matrices: MonthMatrix) -> Workbook:
-    """Книга з аркушем на метрику. Перший аркуш — харчування, як і раніше."""
+    """Книга з аркушем на метрику. Перший аркуш — відсутні, другий — хворі."""
     wb = Workbook()
     for i, matrix in enumerate(matrices):
         ws = wb.active if i == 0 else wb.create_sheet()

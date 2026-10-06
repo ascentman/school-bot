@@ -1,126 +1,51 @@
-"""Дані для щоденного звіту: дата, загальна цифра, класи по змінах.
+"""Дані для щоденного звіту: дата й класи з цифрами відсутніх і хворих.
 
 Окремо від MonthMatrix свідомо: місячний табель відповідає на питання «як було
-протягом місяця», а цей — на питання «кого й скільки годувати сьогодні», і
-групується не по класах, а по змінах роздачі.
+протягом місяця», а цей — на питання «кого немає сьогодні», і друкується на
+одному аркуші, щоб його можна було віднести медсестрі одразу.
 """
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date as Date
-from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from school_bot.domain.meals import DaySummary, day_summary
-from school_bot.domain.slots import MealSlot
+from school_bot.domain.meals import DaySummary, day_summary, optional_sum
 
-log = logging.getLogger(__name__)
-
-# Класи, яких немає в жодній зміні MEAL_SLOTS. Мовчки викидати їх не можна:
-# новий клас інакше зникне зі звіту, а сума перестане сходитися.
-UNSCHEDULED_LABEL = "Поза розкладом"
+REPORT_TITLE = "Відсутні та хворі"
 
 
-def _optional_sum(values: Iterable[int | None]) -> int | None:
-    """Сума наявних цифр, або None, якщо не подано жодної.
-
-    Те саме правило, що й у day_total місячного табеля: порожньо — це не
-    нуль. Інакше колонка «відсутні» за старі дні показувала б рівні нулі.
-    """
-    present = [v for v in values if v is not None]
-    return sum(present) if present else None
-
-
-class ReportKind(StrEnum):
-    """Два звіти за день, бо їх читають різні люди.
-
-    Харчування йде на кухню й до бухгалтерії, відсутні — до медсестри й
-    класних керівників. Зшивати їх в один аркуш означало б, що кожен читає
-    половину чужого.
-    """
-
-    MEALS = "meals"
-    ABSENCE = "absence"
-
-
-UA_REPORT_KIND = {
-    ReportKind.MEALS: "Харчування",
-    ReportKind.ABSENCE: "Відсутні та хворі",
-}
-
-
-def day_report_filename(d: Date, kind: ReportKind = ReportKind.MEALS) -> str:
+def day_report_filename(d: Date) -> str:
     """Ім'я файлу звіту за день.
 
     Спільне для розсилки й кнопки: інакше той самий звіт приходив би
     під двома різними назвами.
     """
-    stem = "harchuvannia" if kind is ReportKind.MEALS else "vidsutni"
-    return f"{stem}_{d:%Y-%m-%d}.pdf"
+    return f"vidsutni_{d:%Y-%m-%d}.pdf"
 
 
 @dataclass(slots=True)
 class ClassCell:
     """Клас у звіті за день.
 
-    `submitted` — це НАЯВНІСТЬ ЗАПИСУ, а не наявність цифри. Донедавна ці дві
-    речі збігалися, бо цифра була одна й обовʼязкова. Тепер клас може подати
-    харчування й пропустити відсутніх, тож виводити «подав» зі значення
+    `submitted` — це НАЯВНІСТЬ ЗАПИСУ, а не наявність цифри: клас може подати
+    відсутніх і пропустити питання про хворих, тож виводити «подав» зі значення
     означало б рахувати його в боржники.
     """
 
     name: str
-    count: int | None
     absent: int | None = None
     sick: int | None = None
     submitted: bool = True
 
 
 @dataclass(slots=True)
-class SlotGroup:
-    """Одна зміна у звіті. `label` порожній, якщо розклад не заданий."""
-
-    label: str
-    cells: list[ClassCell]
-
-    @property
-    def total(self) -> int:
-        return sum(c.count or 0 for c in self.cells)
-
-    @property
-    def missing(self) -> list[str]:
-        return [c.name for c in self.cells if not c.submitted]
-
-    @property
-    def has_data(self) -> bool:
-        return any(c.submitted for c in self.cells)
-
-    @property
-    def absent_total(self) -> int | None:
-        return _optional_sum(c.absent for c in self.cells)
-
-    @property
-    def sick_total(self) -> int | None:
-        return _optional_sum(c.sick for c in self.cells)
-
-
-@dataclass(slots=True)
 class DayReport:
     date: Date
     school_name: str
-    groups: list[SlotGroup]
-
-    @property
-    def cells(self) -> list[ClassCell]:
-        return [c for g in self.groups for c in g.cells]
-
-    @property
-    def total(self) -> int:
-        return sum(g.total for g in self.groups)
+    cells: list[ClassCell]
 
     @property
     def expected(self) -> int:
@@ -132,80 +57,45 @@ class DayReport:
 
     @property
     def absent_total(self) -> int | None:
-        return _optional_sum(c.absent for c in self.cells)
+        return optional_sum(c.absent for c in self.cells)
 
     @property
     def sick_total(self) -> int | None:
-        return _optional_sum(c.sick for c in self.cells)
+        return optional_sum(c.sick for c in self.cells)
 
     @property
     def missing(self) -> list[str]:
         return [c.name for c in self.cells if not c.submitted]
 
 
-def build_report(
-    summary: DaySummary,
-    *,
-    school_name: str = "",
-    slots: Sequence[MealSlot] = (),
-) -> DayReport:
-    """Розкласти вже зібраний підсумок дня по змінах роздачі.
+def build_report(summary: DaySummary, *, school_name: str = "") -> DayReport:
+    """Перекласти вже зібраний підсумок дня у рядки звіту.
 
     Приймає готовий DaySummary, а не сесію, щоб текст зведення і прикріплений
     до нього PDF будувалися з одного знімка даних. Інакше між двома запитами
     вчитель встигає надіслати цифру — і два документи за той самий день
     показують різні числа.
+
+    Порядок класів — той самий, що й усюди: клас, паралель, літера.
     """
-    by_name = {s.school_class.name: s for s in summary.statuses}
-
-    groups: list[SlotGroup] = []
-    placed: set[str] = set()
-
-    for slot in slots:
-        cells: list[ClassCell] = []
-        for name in slot.class_names:
-            status = by_name.get(name)
-            if status is None:
-                # Клас є в розкладі, але вимкнений або не заведений у школі.
-                log.warning("MEAL_SLOTS: класу %s немає серед активних", name)
-                continue
-            cells.append(
-                ClassCell(
-                    name=name,
-                    count=status.count,
-                    absent=status.absent,
-                    sick=status.sick,
-                    submitted=status.submitted,
-                )
+    return DayReport(
+        date=summary.date,
+        school_name=school_name,
+        cells=[
+            ClassCell(
+                name=s.school_class.name,
+                absent=s.absent,
+                sick=s.sick,
+                submitted=s.submitted,
             )
-            placed.add(name)
-        if cells:
-            groups.append(SlotGroup(label=slot.label, cells=cells))
-
-    rest = [
-        ClassCell(
-            name=s.school_class.name,
-            count=s.count,
-            absent=s.absent,
-            sick=s.sick,
-            submitted=s.submitted,
-        )
-        for s in summary.statuses
-        if s.school_class.name not in placed
-    ]
-    if rest:
-        groups.append(SlotGroup(label=UNSCHEDULED_LABEL if slots else "", cells=rest))
-
-    return DayReport(date=summary.date, school_name=school_name, groups=groups)
+            for s in summary.statuses
+        ],
+    )
 
 
 async def build_day_report(
-    session: AsyncSession,
-    d: Date,
-    *,
-    school_name: str = "",
-    slots: Sequence[MealSlot] = (),
+    session: AsyncSession, d: Date, *, school_name: str = ""
 ) -> DayReport:
     """Зібрати звіт за день. Для тих, у кого ще немає готового DaySummary."""
     summary = await day_summary(session, d)
-    return build_report(summary, school_name=school_name, slots=slots)
+    return build_report(summary, school_name=school_name)

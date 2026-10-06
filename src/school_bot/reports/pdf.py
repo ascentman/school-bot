@@ -22,7 +22,7 @@ from reportlab.platypus import (
 from reportlab.platypus.doctemplate import LayoutError
 
 from school_bot.domain.dates import format_date
-from school_bot.reports.day import UA_REPORT_KIND, DayReport, ReportKind
+from school_bot.reports.day import REPORT_TITLE, DayReport
 from school_bot.reports.matrix import MonthMatrix
 
 log = logging.getLogger(__name__)
@@ -182,7 +182,7 @@ def render_pdf(*matrices: MonthMatrix) -> bytes:
         rightMargin=8 * mm,
         topMargin=10 * mm,
         bottomMargin=10 * mm,
-        title=f"Облік харчування — {first.title}",
+        title=f"Облік відсутніх — {first.title}",
     )
 
     story: list = []
@@ -195,16 +195,15 @@ def render_pdf(*matrices: MonthMatrix) -> bytes:
     return buf.getvalue()
 
 
-# Великий звіт читає людина старшого віку, часто роздрукований і без окулярів
-# під рукою. Тому кегль удвічі більший за компактний варіант, а межі між
-# класами — суцільні лінії, а не відтінки: на ксероксі відтінки зникають.
-# Щоденні звіти друкують і читають зблизька, часто люди старшого віку. Тому
-# правило одне для обох: рівно один аркуш А4 і найбільший кегль, який на ньому
-# вміщається. Дві колонки поруч — бо 35 рядків в одну таким шрифтом не лягають.
+# Щоденний звіт читають зблизька й часто роздрукованим, нерідко люди старшого
+# віку. Тому правило просте: рівно один аркуш А4 і найбільший кегль, який на
+# ньому вміщається. Дві колонки поруч — бо 25 рядків в одну таким шрифтом не
+# лягають. Межі між класами — суцільні лінії, а не відтінки: на ксероксі
+# відтінки зникають.
 ONE_PAGE_MAX_FONT = 26
 ONE_PAGE_MIN_FONT = 8
 # Шапку читають один раз, тож вона не має тягнути вниз кегль усієї таблиці:
-# «Харч.» у вузькій колонці інакше обмежував би цифри, заради яких усе й є.
+# «Хворі» у вузькій колонці інакше обмежував би цифри, заради яких усе й є.
 HEADER_FONT_CAP = 13
 
 PAGE_MARGIN = 14 * mm
@@ -212,13 +211,11 @@ USABLE_WIDTH = A4[0] - 2 * PAGE_MARGIN      # 182 мм
 COLUMN_GAP = 2 * mm                          # проміжок між двома половинами
 HALF_WIDTH = (USABLE_WIDTH - 2 * COLUMN_GAP) / 2
 
-# Ширини комірок у половині аркуша: (підпис, значення…). Сума кожного набору
-# має вкладатися в HALF_WIDTH — інакше таблиця мовчки наїде на поля: reportlab
-# падає лише по висоті, а надто широку просто центрує поверх берегів.
-KIND_COLUMNS: dict[ReportKind, tuple[list[str], list[float]]] = {
-    ReportKind.MEALS: (["Клас", "Харч."], [64 * mm, 24 * mm]),
-    ReportKind.ABSENCE: (["Клас", "Відс.", "Хворі"], [46 * mm, 21 * mm, 21 * mm]),
-}
+# Ширини комірок у половині аркуша: (підпис, значення…). Сума має вкладатися в
+# HALF_WIDTH — інакше таблиця мовчки наїде на поля: reportlab падає лише по
+# висоті, а надто широку просто центрує поверх берегів.
+DAY_HEADERS = ["Клас", "Відс.", "Хворі"]
+DAY_WIDTHS = [46 * mm, 21 * mm, 21 * mm]
 
 
 def _big_doc(buf: BytesIO, title: str) -> SimpleDocTemplate:
@@ -237,52 +234,24 @@ def _dash(v: int | None) -> str:
     return "—" if v is None else str(v)
 
 
-def _report_rows(report: DayReport, kind: ReportKind) -> list[tuple[list[str], bool]]:
-    """Плаский список рядків: (комірки, чи це заголовок зміни)."""
-    meals = kind is ReportKind.MEALS
-    rows: list[tuple[list[str], bool]] = []
-    for group in report.groups:
-        if group.label:
-            if meals:
-                cells = [group.label, str(group.total) if group.has_data else "—"]
-            else:
-                cells = [group.label, _dash(group.absent_total), _dash(group.sick_total)]
-            rows.append((cells, True))
-        for c in group.cells:
-            if meals:
-                cells = [c.name, _dash(c.count)]
-            else:
-                cells = [c.name, _dash(c.absent), _dash(c.sick)]
-            rows.append((cells, False))
-    return rows
+def _report_rows(report: DayReport) -> list[list[str]]:
+    """Плаский список рядків: клас, відсутні, хворі."""
+    return [[c.name, _dash(c.absent), _dash(c.sick)] for c in report.cells]
 
 
-def _split_in_two(
-    rows: list[tuple[list[str], bool]],
-) -> tuple[list[tuple[list[str], bool]], list[tuple[list[str], bool]]]:
-    """Розрізати список навпіл, але тільки по межі зміни.
+def _split_in_two(rows: list[list[str]]) -> tuple[list[list[str]], list[list[str]]]:
+    """Розрізати список навпіл: ліва колонка аркуша й права.
 
-    Розрив усередині зміни означав би, що частина класів однієї роздачі
-    опинилася в іншій колонці — саме те, чого шукає око на аркуші.
+    Класи йдуть у звичайному порядку (1-А, 1-Б, … 11-Б), тож рівний розріз
+    посередині лишає обидві половини впорядкованими — око шукає клас зверху
+    вниз у лівій колонці, потім у правій.
     """
     middle = (len(rows) + 1) // 2
-    candidates = [i for i, (_, is_group) in enumerate(rows) if is_group and i > 0]
-    if candidates:
-        cut = min(candidates, key=lambda i: abs(i - middle))
-        return rows[:cut], rows[cut:]
-
-    # Межі немає — уся школа в одній зміні (MEAL_SLOTS з одним інтервалом) або
-    # розкладу немає взагалі. Ріжемо посередині, але повторюємо заголовок
-    # зверху другої колонки: інакше половина класів висіла б без підпису.
-    left, right = rows[:middle], rows[middle:]
-    header = next((cells for cells, is_group in rows if is_group), None)
-    if header is not None and right:
-        right = [(header, True), *right]
-    return left, right
+    return rows[:middle], rows[middle:]
 
 
 def _fits_width(
-    rows: list[tuple[list[str], bool]],
+    rows: list[list[str]],
     headers: list[str],
     widths: list[float],
     font: str,
@@ -296,7 +265,7 @@ def _fits_width(
     не більшає. Тобто переповнення по ширині не видно ні звідки, крім оцього.
     """
     checks = [(headers, bold, min(size, HEADER_FONT_CAP))]
-    checks += [(cells, bold if is_group else font, size) for cells, is_group in rows]
+    checks += [(cells, font, size) for cells in rows]
     for cells, face, cell_size in checks:
         for text, width in zip(cells, widths, strict=True):
             if pdfmetrics.stringWidth(text, face, cell_size) > width - 12:
@@ -305,7 +274,7 @@ def _fits_width(
 
 
 def _best_font(
-    rows: list[tuple[list[str], bool]],
+    rows: list[list[str]],
     headers: list[str],
     widths: list[float],
     font: str,
@@ -320,7 +289,7 @@ def _best_font(
 
 
 def _half_table(
-    rows: list[tuple[list[str], bool]],
+    rows: list[list[str]],
     headers: list[str],
     widths: list[float],
     font: str,
@@ -328,9 +297,9 @@ def _half_table(
     size: float,
 ) -> Table:
     """Одна з двох колонок аркуша."""
-    data = [headers] + [cells for cells, _ in rows]
+    data = [headers] + rows
     table = Table(data, colWidths=widths, repeatRows=1)
-    style = [
+    table.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), font),
         ("FONTNAME", (0, 0), (-1, 0), bold),
         ("FONTSIZE", (0, 0), (-1, -1), size),
@@ -347,27 +316,16 @@ def _half_table(
         ("LEFTPADDING", (0, 0), (0, -1), 7),
         ("TOPPADDING", (0, 0), (-1, -1), 3.5),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
-    ]
-    for i, (_, is_group) in enumerate(rows, start=1):
-        if is_group:
-            style += [
-                ("BACKGROUND", (0, i), (-1, i), colors.HexColor("#E4EBF5")),
-                ("FONTNAME", (0, i), (-1, i), bold),
-                ("LINEABOVE", (0, i), (-1, i), 1.8, colors.black),
-            ]
-    table.setStyle(TableStyle(style))
+    ]))
     return table
 
 
-def _draw_one_page(report: DayReport, kind: ReportKind, size: float) -> bytes:
+def _draw_one_page(report: DayReport, size: float) -> bytes:
     font = _cyrillic_font()
     bold = _bold_font()
-    headers, widths = KIND_COLUMNS[kind]
-    meals = kind is ReportKind.MEALS
-    heading = UA_REPORT_KIND[kind]
     buf = BytesIO()
     day_title = f"{format_date(report.date, with_weekday=True)} {report.date.year} р."
-    doc = _big_doc(buf, f"{heading} — {day_title}")
+    doc = _big_doc(buf, f"{REPORT_TITLE} — {day_title}")
 
     title_style = ParagraphStyle(
         "ot", fontName=bold, fontSize=20, alignment=1, spaceAfter=2, leading=24
@@ -382,27 +340,24 @@ def _draw_one_page(report: DayReport, kind: ReportKind, size: float) -> bytes:
     note_style = ParagraphStyle("on", fontName=font, fontSize=10, spaceBefore=6)
     foot_style = ParagraphStyle("of", fontName=font, fontSize=10, spaceBefore=10)
 
-    story = [Paragraph(heading, title_style)]
+    story = [Paragraph(REPORT_TITLE, title_style)]
     if report.school_name:
         story.append(Paragraph(f"{report.school_name} · {day_title}", sub_style))
-    if meals:
-        story.append(Paragraph(f"РАЗОМ: {report.total}", total_style))
-    else:
-        story.append(
-            Paragraph(
-                f"ВІДСУТНІХ: {_dash(report.absent_total)}"
-                f" · З НИХ ХВОРІ: {_dash(report.sick_total)}",
-                total_style,
-            )
+    story.append(
+        Paragraph(
+            f"ВІДСУТНІХ: {_dash(report.absent_total)}"
+            f" · З НИХ ХВОРІ: {_dash(report.sick_total)}",
+            total_style,
         )
+    )
 
-    left, right = _split_in_two(_report_rows(report, kind))
+    left, right = _split_in_two(_report_rows(report))
     # Проміжок додається до кожної половини рівно один раз, і сума не має
     # перевищувати USABLE_WIDTH — це стереже тест test_table_fits_the_page.
     columns = Table(
         [[
-            _half_table(left, headers, widths, font, bold, size),
-            _half_table(right, headers, widths, font, bold, size),
+            _half_table(left, DAY_HEADERS, DAY_WIDTHS, font, bold, size),
+            _half_table(right, DAY_HEADERS, DAY_WIDTHS, font, bold, size),
         ]],
         colWidths=[HALF_WIDTH + COLUMN_GAP, HALF_WIDTH + COLUMN_GAP],
         hAlign="CENTER",
@@ -416,8 +371,7 @@ def _draw_one_page(report: DayReport, kind: ReportKind, size: float) -> bytes:
     ]))
     story.append(columns)
 
-    # Виноска потрібна обом звітам: для відсутніх вона навіть важливіша —
-    # клас, що не подав нічого, не входить у суму, тож «Відсутніх: 15» без
+    # Клас, що не подав нічого, у суму не входить, тож «Відсутніх: 15» без
     # цього рядка виглядало б повною цифрою, а насправді може бути більшою.
     if report.missing:
         story.append(
@@ -435,7 +389,7 @@ def _draw_one_page(report: DayReport, kind: ReportKind, size: float) -> bytes:
     return buf.getvalue()
 
 
-def _draw_flowing(report: DayReport, kind: ReportKind, size: float) -> bytes:
+def _draw_flowing(report: DayReport, size: float) -> bytes:
     """Запасний рендер для дуже великої школи: одна колонка, кілька сторінок.
 
     Дві колонки — нерозривний блок, і коли він вищий за аркуш, reportlab не
@@ -444,11 +398,9 @@ def _draw_flowing(report: DayReport, kind: ReportKind, size: float) -> bytes:
     """
     font = _cyrillic_font()
     bold = _bold_font()
-    headers, widths = KIND_COLUMNS[kind]
-    heading = UA_REPORT_KIND[kind]
     buf = BytesIO()
     day_title = f"{format_date(report.date, with_weekday=True)} {report.date.year} р."
-    doc = _big_doc(buf, f"{heading} — {day_title}")
+    doc = _big_doc(buf, f"{REPORT_TITLE} — {day_title}")
 
     title_style = ParagraphStyle(
         "ft", fontName=bold, fontSize=20, alignment=1, spaceAfter=2, leading=24
@@ -458,21 +410,21 @@ def _draw_flowing(report: DayReport, kind: ReportKind, size: float) -> bytes:
         textColor=colors.HexColor("#444444"),
     )
     story = [
-        Paragraph(heading, title_style),
+        Paragraph(REPORT_TITLE, title_style),
         Paragraph(f"{report.school_name} · {day_title}", sub_style),
-        _half_table(_report_rows(report, kind), headers, widths, font, bold, size),
+        _half_table(_report_rows(report), DAY_HEADERS, DAY_WIDTHS, font, bold, size),
     ]
     doc.build(story)
     return buf.getvalue()
 
 
-def render_day_report(report: DayReport, kind: ReportKind) -> bytes:
+def render_day_report(report: DayReport) -> bytes:
     """Щоденний звіт: один аркуш А4 і найбільший кегль, який на ньому вміщається.
 
     Ширину перевіряємо самі, а висоту — єдиним надійним способом: будуємо
     документ і дивимося, скільки вийшло сторінок. Тому кегль спускаємо, поки
     не влізе; більша школа отримує менший шрифт, а не другу сторінку — її
-    просто не понесуть на роздачу.
+    просто не понесуть медсестрі.
 
     Межа все ж існує: приблизно від ста класів на аркуш не лягає навіть
     найдрібніший кегль. Там звіт друкується в кілька сторінок — це гірше, але
@@ -480,13 +432,12 @@ def render_day_report(report: DayReport, kind: ReportKind) -> bytes:
     """
     font = _cyrillic_font()
     bold = _bold_font()
-    headers, widths = KIND_COLUMNS[kind]
-    rows = _report_rows(report, kind)
-    size = _best_font(rows, headers, widths, font, bold)
+    rows = _report_rows(report)
+    size = _best_font(rows, DAY_HEADERS, DAY_WIDTHS, font, bold)
 
     while size >= ONE_PAGE_MIN_FONT:
         try:
-            data = _draw_one_page(report, kind, size)
+            data = _draw_one_page(report, size)
         except LayoutError:
             # Дві колонки — один нерозривний блок. Коли він вищий за сторінку,
             # reportlab не ділить його, а падає; для нас це те саме «не влізло».
@@ -498,9 +449,8 @@ def render_day_report(report: DayReport, kind: ReportKind) -> bytes:
 
     # Школа завелика, щоб влізти на аркуш навіть найдрібнішим кеглем. Краще
     # багатосторінковий звіт, ніж жодного: інакше виняток дійшов би до джоба,
-    # той мовчки проковтнув би його, і того дня не прийшло б ні PDF, ні листа.
+    # той мовчки проковтнув би його, і того дня не прийшло б ні PDF, ні тексту.
     log.warning(
-        "Звіт %s за %s не вміщається на аркуш — друкую в кілька сторінок",
-        kind.value, report.date,
+        "Звіт за %s не вміщається на аркуш — друкую в кілька сторінок", report.date
     )
-    return _draw_flowing(report, kind, ONE_PAGE_MIN_FONT)
+    return _draw_flowing(report, ONE_PAGE_MIN_FONT)

@@ -69,7 +69,7 @@ su - "$APP_USER" -c "cd $APP_DIR && ~/.local/bin/uv sync --frozen --no-dev"
 say "Служба systemd"
 cat > /etc/systemd/system/school-bot.service <<'UNIT'
 [Unit]
-Description=Telegram-бот обліку харчування учнів
+Description=Telegram-бот обліку відсутніх учнів
 After=network-online.target
 Wants=network-online.target
 

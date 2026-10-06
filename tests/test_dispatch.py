@@ -343,7 +343,7 @@ async def test_injected_html_in_name_is_escaped_on_every_admin_screen(
         intruder = await s.scalar(select(Teacher).where(Teacher.tg_user_id == 912))
         await set_teacher_classes(s, intruder.id, {people["class_id"]})
         await upsert_entry(
-            s, class_id=people["class_id"], d=date.today(), eating_count=20,
+            s, class_id=people["class_id"], d=date.today(), absent_count=2,
             teacher_id=intruder.id,
         )
         await s.commit()

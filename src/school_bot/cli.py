@@ -28,8 +28,8 @@ from school_bot.domain.classes import create_classes, set_teacher_classes
 from school_bot.domain.meals import active_classes, day_summary, upsert_entry
 from school_bot.domain.phones import format_phone
 from school_bot.domain.teachers import import_teachers
-from school_bot.reports import mailer, sheets
-from school_bot.reports.day import ReportKind, build_day_report, day_report_filename
+from school_bot.reports import sheets
+from school_bot.reports.day import build_day_report, day_report_filename
 from school_bot.reports.matrix import (
     available_months,
     build_month_matrices,
@@ -41,7 +41,7 @@ from school_bot.scheduler import jobs
 
 BroadcastJob = Callable[..., Awaitable[int]]
 
-app = typer.Typer(add_completion=False, help="Керування ботом обліку харчування")
+app = typer.Typer(add_completion=False, help="Керування ботом обліку відсутніх")
 
 
 def _setup_logging() -> None:
@@ -100,22 +100,13 @@ def remind(
     _run_broadcast(jobs.remind, date, force, "Надіслано нагадувань")
 
 
-@app.command("meals-report")
-def meals_report(
+@app.command("day-report-send")
+def day_report_send(
     date: str = typer.Option(None),
     force: bool = typer.Option(False),
 ) -> None:
-    """Надіслати звіт про харчування."""
-    _run_broadcast(jobs.meals_report, date, force, "Надіслано звітів про харчування")
-
-
-@app.command("absence-report")
-def absence_report(
-    date: str = typer.Option(None),
-    force: bool = typer.Option(False),
-) -> None:
-    """Надіслати звіт про відсутніх і хворих."""
-    _run_broadcast(jobs.absence_report, date, force, "Надіслано звітів про відсутніх")
+    """Надіслати адмінам звіт про відсутніх і хворих."""
+    _run_broadcast(jobs.day_report, date, force, "Надіслано звітів")
 
 
 @app.command()
@@ -142,7 +133,7 @@ def report(
             )
             matrix = matrices[0]
 
-        stem = f"harchuvannia_{year}-{mon:02d}"
+        stem = f"vidsutni_{year}-{mon:02d}"
         if fmt in ("xlsx", "both"):
             path = out / f"{stem}.xlsx"
             path.write_bytes(render_xlsx(*matrices))
@@ -152,7 +143,7 @@ def report(
             path.write_bytes(render_pdf(*matrices))
             typer.echo(f"✔ {path}")
         typer.echo(
-            f"  {matrix.title}: {matrix.grand_total} порцій, "
+            f"  {matrix.title}: {matrix.grand_total} пропусків, "
             f"{len(matrix.elapsed_school_days)} навч. дн. минуло, "
             f"незаповнених — {matrix.missing_total}"
         )
@@ -164,10 +155,8 @@ def report(
 def day_report(
     date: str = typer.Option(None, help="Дата РРРР-ММ-ДД. Без параметра — сьогодні."),
     out: Path = typer.Option(Path("reports_out"), help="Куди зберегти"),
-    email: bool = typer.Option(False, help="Ще й надіслати на REPORT_EMAILS"),
-    kind: str = typer.Option("both", help="meals | absence | both"),
 ) -> None:
-    """Згенерувати PDF-звіти за день у файли (і, за потреби, надіслати поштою)."""
+    """Згенерувати PDF-звіт про відсутніх і хворих за день у файл."""
     _setup_logging()
     d = _parse_date(date)      # без параметра — сьогодні
 
@@ -175,49 +164,20 @@ def day_report(
         await ensure_schema()
         out.mkdir(parents=True, exist_ok=True)
         async with SessionMaker() as session:
-            report = await build_day_report(
-                session, d, school_name=settings.school_name, slots=settings.meal_slots
-            )
+            report = await build_day_report(session, d, school_name=settings.school_name)
 
-        wanted = {
-            "meals": [ReportKind.MEALS],
-            "absence": [ReportKind.ABSENCE],
-            "both": [ReportKind.MEALS, ReportKind.ABSENCE],
-        }.get(kind)
-        if wanted is None:
-            typer.echo("✖ --kind має бути meals, absence або both")
-            raise typer.Exit(1)
+        path = out / day_report_filename(d)
+        path.write_bytes(render_day_report(report))
+        typer.echo(f"✔ {path}")
 
-        for report_kind in wanted:
-            pdf = render_day_report(report, report_kind)
-            path = out / day_report_filename(d, report_kind)
-            path.write_bytes(pdf)
-            typer.echo(f"✔ {path}")
-
-            if email:
-                if not settings.email_enabled:
-                    typer.echo("✖ Пошта не налаштована: заповніть SMTP_* і REPORT_EMAILS")
-                    raise typer.Exit(1)
-                # Тут навмисно без safe_-обгортки: команду запустили, щоб
-                # перевірити налаштування, тож помилка SMTP має бути на екрані.
-                await mailer.send_day_report(report, pdf, kind=report_kind)
-                typer.echo(f"  → надіслано на {', '.join(settings.report_emails)}")
-
-        # Підсумок мовою того звіту, який попросили: після --kind absence
-        # рядок про порції збивав би з пантелику.
-        if ReportKind.MEALS in wanted:
-            typer.echo(
-                f"  {d}: {report.total} порцій, подали {report.submitted}"
-                f" з {report.expected}"
-                + (f", не подали — {', '.join(report.missing)}" if report.missing else "")
-            )
-        if ReportKind.ABSENCE in wanted:
-            absent = report.absent_total
-            sick = report.sick_total
-            typer.echo(
-                f"  {d}: відсутніх {absent if absent is not None else '—'}"
-                f", з них хворі {sick if sick is not None else '—'}"
-            )
+        absent = report.absent_total
+        sick = report.sick_total
+        typer.echo(
+            f"  {d}: відсутніх {absent if absent is not None else '—'}"
+            f", з них хворі {sick if sick is not None else '—'}"
+            f", подали {report.submitted} з {report.expected}"
+            + (f", не подали — {', '.join(report.missing)}" if report.missing else "")
+        )
 
     asyncio.run(_go())
 
@@ -291,7 +251,6 @@ def seed() -> None:
             )
 
             rng = random.Random(42)
-            base = {c.id: rng.randint(18, 28) for c in classes}
             filled = 0
             cursor = first
             while cursor <= start_of_today:
@@ -301,11 +260,13 @@ def seed() -> None:
                         # червону заливку в звіті
                         if c.name == "5-В" and cursor.day % 3 == 0:
                             continue
+                        absent = rng.randint(0, 4)
                         await upsert_entry(
                             session,
                             class_id=c.id,
                             d=cursor,
-                            eating_count=max(0, base[c.id] + rng.randint(-3, 3)),
+                            absent_count=absent,
+                            sick_count=rng.randint(0, absent),
                             teacher_id=teachers[0].id,
                         )
                         filled += 1
@@ -456,9 +417,12 @@ def status() -> None:
 
             if await is_school_day(session, d):
                 summary = await day_summary(session, d)
+                absent = summary.absent_total
+                sick = summary.sick_total
                 typer.echo(
                     f"Сьогодні ({d}): подали {len(summary.submitted)}/{summary.expected}, "
-                    f"разом {summary.total}"
+                    f"відсутніх {absent if absent is not None else '—'}, "
+                    f"з них хворі {sick if sick is not None else '—'}"
                 )
                 if summary.missing:
                     typer.echo(

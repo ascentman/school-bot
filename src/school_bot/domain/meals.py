@@ -1,4 +1,4 @@
-"""Запис і агрегація даних про харчування."""
+"""Запис і агрегація даних про відсутніх та хворих."""
 
 from __future__ import annotations
 
@@ -17,7 +17,16 @@ from school_bot.db.models import (
     MealField,
     SchoolClass,
 )
-from school_bot.domain.calendar import previous_school_day
+
+
+def optional_sum(values) -> int | None:
+    """Сума наявних цифр, або None, якщо не подано жодної.
+
+    Порожньо — це не нуль: до появи обліку відсутніх даних не було взагалі, і
+    звіт за той час не має стверджувати, що тоді ніхто не хворів.
+    """
+    present = [v for v in values if v is not None]
+    return sum(present) if present else None
 
 
 @dataclass(slots=True)
@@ -29,12 +38,8 @@ class ClassDayStatus:
     def submitted(self) -> bool:
         return self.entry is not None
 
-    @property
-    def count(self) -> int | None:
-        return self.entry.eating_count if self.entry else None
-
-    # Відсутні й хворі можуть бути None навіть за наявного запису — вчитель
-    # пропустив питання. Це не те саме, що «клас не подав нічого».
+    # Хворі можуть бути None навіть за наявного запису — вчитель пропустив
+    # питання. Це не те саме, що «клас не подав нічого».
     @property
     def absent(self) -> int | None:
         return self.entry.absent_count if self.entry else None
@@ -58,8 +63,12 @@ class DaySummary:
         return [s for s in self.statuses if not s.submitted]
 
     @property
-    def total(self) -> int:
-        return sum(s.count or 0 for s in self.submitted)
+    def absent_total(self) -> int | None:
+        return optional_sum(s.absent for s in self.submitted)
+
+    @property
+    def sick_total(self) -> int | None:
+        return optional_sum(s.sick for s in self.submitted)
 
     @property
     def expected(self) -> int:
@@ -84,8 +93,10 @@ async def get_entry(session: AsyncSession, class_id: int, d: Date) -> MealEntry 
 
 # Поля, за якими ведеться журнал правок. Порядок визначає порядок рядків
 # у журналі, коли за один виклик змінилося кілька цифр.
+#
+# eating_count тут немає навмисно: харчування більше не обліковується, тож
+# нових рядків EATING не зʼявляється. Старі в журналі лишаються.
 _AUDITED: tuple[tuple[str, MealField], ...] = (
-    ("eating_count", MealField.EATING),
     ("absent_count", MealField.ABSENT),
     ("sick_count", MealField.SICK),
 )
@@ -126,7 +137,6 @@ async def upsert_entry(
     *,
     class_id: int,
     d: Date,
-    eating_count: int | None = None,
     absent_count: int | None = None,
     sick_count: int | None = None,
     teacher_id: int | None,
@@ -140,7 +150,6 @@ async def upsert_entry(
     неможливо пояснити перевірці, яку саме цифру за минулий тиждень виправили.
     """
     values: dict[str, int | None] = {
-        "eating_count": eating_count,
         "absent_count": absent_count,
         "sick_count": sick_count,
     }
@@ -150,15 +159,15 @@ async def upsert_entry(
     audits: list[MealEntryAudit] = []
 
     if entry is None:
-        if eating_count is None:
-            # Запис без харчування створити не можна: колонка NOT NULL, і сам
-            # звіт будується навколо неї. Краще зрозуміла помилка, ніж
-            # IntegrityError із глибини SQLAlchemy.
-            raise ValueError("Новий запис потребує eating_count")
+        if absent_count is None:
+            # Запис із самих хворих не має сенсу: саме кількість відсутніх —
+            # перше питання й основа звіту. Краще зрозуміла помилка, ніж
+            # напівпорожній рядок, який потім нічим не пояснити.
+            raise ValueError("Новий запис потребує absent_count")
         entry = MealEntry(
             class_id=class_id,
             date=d,
-            eating_count=eating_count,
+            absent_count=absent_count,
             entered_by_teacher_id=teacher_id,
             source=source,
         )
@@ -167,15 +176,15 @@ async def upsert_entry(
         audits.append(
             MealEntryAudit(
                 entry_id=entry.id,
-                changed_field=MealField.EATING,
+                changed_field=MealField.ABSENT,
                 old_value=None,
-                new_value=eating_count,
+                new_value=absent_count,
                 changed_by_teacher_id=teacher_id,
                 reason=reason,
             )
         )
-        # Харчування вже застосоване й зажурнальоване вище; лишилися дві цифри,
-        # які адмін чи імпорт можуть передати тим самим викликом.
+        # Відсутні вже застосовані й зажурнальовані вище; лишилися хворі,
+        # яких адмін чи той самий виклик може передати разом з ними.
         pending = _AUDITED[1:]
     else:
         pending = _AUDITED
@@ -189,7 +198,7 @@ async def upsert_entry(
 
     # Хворих не буває більше за відсутніх. Стеля в клавіатурі цього не
     # гарантує: вчитель може повернутися ланцюжком і ЗМЕНШИТИ відсутніх уже
-    # після того, як указав хворих, а тоді пропустити третій крок — і запис
+    # після того, як указав хворих, а тоді пропустити другий крок — і запис
     # лишився б із «відсутні 2 · хворі 3». Тому інваріант тримаємо тут, де
     # пишуться дані, а не в кожному хендлері окремо.
     if entry.absent_count is not None and (entry.sick_count or 0) > entry.absent_count:
@@ -212,17 +221,17 @@ async def upsert_entry(
 
 
 async def was_corrected(session: AsyncSession, entry_id: int) -> bool:
-    """Чи цифру харчування вже правили після першого запису.
+    """Чи цифру відсутніх уже правили після першого запису.
 
-    Потрібне ланцюжку: на другому й третьому кроці запис уже існує, тож
-    «запис існував» більше не означає «це правка». Джерело правди — журнал.
+    Потрібне ланцюжку: на другому кроці запис уже існує, тож «запис існував»
+    більше не означає «це правка». Джерело правди — журнал.
     """
     n = await session.scalar(
         select(func.count())
         .select_from(MealEntryAudit)
         .where(
             MealEntryAudit.entry_id == entry_id,
-            MealEntryAudit.changed_field == MealField.EATING,
+            MealEntryAudit.changed_field == MealField.ABSENT,
         )
     )
     return (n or 0) > 1
@@ -238,26 +247,6 @@ async def day_summary(session: AsyncSession, d: Date) -> DaySummary:
     return DaySummary(
         date=d,
         statuses=[ClassDayStatus(school_class=c, entry=entries.get(c.id)) for c in classes],
-    )
-
-
-async def last_known_count(session: AsyncSession, class_id: int, before: Date) -> int | None:
-    """Значення за попередній навчальний день — для підказки «Як вчора».
-
-    Спершу шукаємо саме попередній навчальний день; якщо запису за нього немає,
-    беремо найсвіжіший наявний, щоб клавіатура все одно центрувалася осмислено.
-    """
-    prev = await previous_school_day(session, before)
-    if prev is not None:
-        entry = await get_entry(session, class_id, prev)
-        if entry is not None:
-            return entry.eating_count
-
-    return await session.scalar(
-        select(MealEntry.eating_count)
-        .where(MealEntry.class_id == class_id, MealEntry.date < before)
-        .order_by(MealEntry.date.desc())
-        .limit(1)
     )
 
 

@@ -32,16 +32,3 @@ def format_date(d: Date, *, with_weekday: bool = False) -> str:
 
 def format_month(year: int, month: int) -> str:
     return f"{month_name(month)} {year}"
-
-
-def plural_children(n: int) -> str:
-    """24 → '24 дитини', 5 → '5 дітей'."""
-    if n % 100 in (11, 12, 13, 14):
-        word = "дітей"
-    elif n % 10 == 1:
-        word = "дитина"
-    elif n % 10 in (2, 3, 4):
-        word = "дитини"
-    else:
-        word = "дітей"
-    return f"{n} {word}"

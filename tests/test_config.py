@@ -47,19 +47,18 @@ def test_every_settings_attribute_exists():
 
 
 def test_defaults_match_agreed_schedule():
-    assert settings.prompt_time == time(9, 5)
-    assert settings.remind_times == [time(9, 15), time(9, 30)]
-    assert settings.meals_report_time == time(9, 40)
-    assert settings.absence_report_time == time(9, 50)
+    """Школа просила рівно одне повідомлення вчителю й один звіт адмінам."""
+    assert settings.prompt_time == time(9, 30)
+    assert settings.remind_times == []
+    assert settings.report_time == time(9, 55)
 
 
 def test_schedule_is_chronological():
-    """Нагадування — після запиту, звіти — після нагадувань і в правильному порядку."""
-    assert all(t > settings.prompt_time for t in settings.remind_times)
-    assert settings.meals_report_time >= max(settings.remind_times)
-    # Харчування раніше за відсутніх: його чекає кухня, і воно найтерміновіше.
-    assert settings.absence_report_time > settings.meals_report_time
-    assert settings.catch_up_deadline > settings.absence_report_time
+    """Звіт — після запиту; нагадування, якщо їх увімкнуть, — між ними."""
+    assert settings.report_time > settings.prompt_time
+    assert all(settings.prompt_time < t <= settings.report_time
+               for t in settings.remind_times)
+    assert settings.catch_up_deadline > settings.report_time
 
 
 def test_remind_times_parsed_from_env_string():
@@ -89,8 +88,9 @@ def test_env_example_parses(tmp_path: Path):
     env.write_text(example, encoding="utf-8")
 
     s = Settings(_env_file=env)
-    assert s.prompt_time == time(9, 5)
-    assert s.remind_times == [time(9, 15), time(9, 30)]
+    assert s.prompt_time == time(9, 30)
+    assert s.remind_times == []
+    assert s.report_time == time(9, 55)
     assert s.catch_up_deadline == time(15, 0)
     assert s.misfire_grace_seconds == 7200
     assert s.school_name and "#" not in s.school_name
@@ -105,7 +105,7 @@ def test_invalid_time_is_rejected(bad: str):
 def test_no_hardcoded_schedule_in_user_texts():
     """Час у текстах має братися з конфігу, інакше він розійдеться з розкладом.
 
-    Вчитель прочитає «о 08:00», а запит прийде о 09:05 — і повірить тексту.
+    Вчитель прочитає «о 08:00», а запит прийде о 09:30 — і повірить тексту.
     """
     import re
 
@@ -191,7 +191,7 @@ def test_user_controlled_text_is_escaped():
         texts.teacher_classes_saved(payload, ["1-А"]),
         texts.invite_created(payload, "https://t.me/bot"),
         texts.import_preview(created=0, updated=0, failed=[payload], classes=[]),
-        texts.prompt_answered(payload, date(2026, 9, 1), 20, "09:05"),
+        texts.prompt_answered(payload, date(2026, 9, 1), "09:30", absent=3, sick=1),
     ]
     for text in rendered:
         assert "<a href=" not in text, f"неекранований HTML у: {text[:70]}"

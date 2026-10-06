@@ -1,6 +1,6 @@
-"""Щоденні джоби: запит, нагадування, зведення адміну, нічний синк.
+"""Щоденні джоби: запит, нагадування, звіт адміну, нічний синк.
 
-Час кожного задається в конфігу (PROMPT_TIME, REMIND_TIMES, DIGEST_TIME).
+Час кожного задається в конфігу (PROMPT_TIME, REMIND_TIMES, REPORT_TIME).
 """
 
 from __future__ import annotations
@@ -31,15 +31,10 @@ from school_bot.domain.meals import (
     active_classes,
     day_summary,
     get_entry,
-    last_known_count,
     primary_teacher_ids,
 )
-from school_bot.reports import mailer, sheets
-from school_bot.reports.day import (
-    ReportKind,
-    build_report,
-    day_report_filename,
-)
+from school_bot.reports import sheets
+from school_bot.reports.day import build_report, day_report_filename
 from school_bot.reports.matrix import available_months, build_month_matrices
 from school_bot.reports.pdf import render_day_report
 
@@ -152,36 +147,23 @@ async def _send_document(bot: Bot, chat_id: int, document: BufferedInputFile) ->
         return False
 
 
-def day_report_attachments(summary: DaySummary) -> list[BufferedInputFile]:
-    """Обидва щоденні звіти як вкладення Telegram.
+def day_report_attachment(summary: DaySummary) -> BufferedInputFile | None:
+    """Щоденний звіт як вкладення Telegram, або None якщо зібрати не вдалося.
 
-    Кожен рендериться окремо: збій одного має коштувати саме той файл, а не
-    обидва. Інакше зламаний звіт про відсутніх забирав би з собою вже готовий
-    звіт про харчування — а його чекає кухня.
+    Збій рендеру не має зривати зведення: текст із головними цифрами вже
+    дійшов, а PDF — зручність поверх нього.
     """
     if not summary.statuses:
-        return []
+        return None
 
     try:
-        report = build_report(
-            summary, school_name=settings.school_name, slots=settings.meal_slots
+        report = build_report(summary, school_name=settings.school_name)
+        return BufferedInputFile(
+            render_day_report(report), filename=day_report_filename(summary.date)
         )
     except Exception:
         log.exception("Не вдалося зібрати звіт за %s", summary.date)
-        return []
-
-    documents: list[BufferedInputFile] = []
-    for kind in (ReportKind.MEALS, ReportKind.ABSENCE):
-        try:
-            documents.append(
-                BufferedInputFile(
-                    render_day_report(report, kind),
-                    filename=day_report_filename(summary.date, kind),
-                )
-            )
-        except Exception:
-            log.exception("Не вдалося намалювати звіт %s за %s", kind.value, summary.date)
-    return documents
+        return None
 
 
 async def _admin_chat_ids(session: AsyncSession) -> list[int]:
@@ -206,8 +188,8 @@ async def _ask_classes(
     """Розіслати класним керівникам повідомлення з цифровою клавіатурою.
 
     Спільне тіло для ранкового запиту й нагадувань: відрізняється лише набір
-    класів і текст, решта — вибір керівника, підказка «як минулого разу»,
-    обробка недоступних отримувачів — однакова.
+    класів і текст, решта — вибір керівника, клавіатура, обробка недоступних
+    отримувачів — однакова.
 
     Повертає (скільки спроб, скільки доставлено).
     """
@@ -219,9 +201,11 @@ async def _ask_classes(
             log.warning("Клас %s без класного керівника", school_class.name)
             continue
 
-        hint = await last_known_count(session, school_class.id, d)
-        markup = keyboards.number_pad(
-            school_class.id, d, last_known=hint, max_children=settings.max_children
+        # Свідомо без підказки «як минулого разу»: кількість відсутніх скаче
+        # день у день, тож вчорашня цифра нічого не підказує — на відміну від
+        # харчування, яке раніше й було першим питанням.
+        markup = keyboards.absent_pad(
+            school_class.id, d, current=None, max_children=settings.max_children
         )
         for teacher_id in teacher_ids:
             teacher = await session.get(Teacher, teacher_id)
@@ -306,22 +290,19 @@ async def remind(
     return sent
 
 
-async def _day_report_job(
+async def day_report(
     bot: Bot,
     maker: async_sessionmaker[AsyncSession],
-    d: Date | None,
-    kind: ReportKind,
+    d: Date | None = None,
     *,
     force: bool = False,
 ) -> int:
-    """Спільне тіло обох щоденних звітів.
+    """Звіт про відсутніх і хворих — адмінам у Telegram.
 
-    Різниця між ними лише в тому, які цифри друкуються й о котрій вони йдуть,
-    тож розсилка, обробка збоїв і журнал запусків спільні.
+    Єдиний канал доставки: школа попросила не надсилати його поштою.
     """
     d = d or today()
     sent = attempted = 0
-    job_key = f"report:{kind.value}"
 
     async with maker() as session:
         if not force and not await is_school_day(session, d):
@@ -335,24 +316,22 @@ async def _day_report_job(
             log.warning("%s: немає активних класів, звіт не будую", d)
             for chat_id in await _admin_chat_ids(session):
                 await _send(bot, chat_id, texts.NO_ACTIVE_CLASSES)
-            await mark_run(session, job_key, d)
+            await mark_run(session, "report", d)
             await session.commit()
             return 0
 
-        report = build_report(
-            summary, school_name=settings.school_name, slots=settings.meal_slots
-        )
+        report = build_report(summary, school_name=settings.school_name)
         try:
-            pdf = render_day_report(report, kind)
+            pdf = render_day_report(report)
         except Exception:
-            # Збій рендеру коштує звіт, а не джоб: інакше він лишився б
+            # Збій рендеру коштує файл, а не джоб: інакше він лишився б
             # непозначеним і наступний старт розіслав би все вдруге.
-            log.exception("Не вдалося побудувати звіт %s за %s", kind.value, d)
+            log.exception("Не вдалося побудувати звіт за %s", d)
             pdf = None
 
-        text = texts.report_ready(kind, report)
+        text = texts.report_ready(report)
         document = (
-            BufferedInputFile(pdf, filename=day_report_filename(d, kind))
+            BufferedInputFile(pdf, filename=day_report_filename(d))
             if pdf is not None
             else None
         )
@@ -364,39 +343,12 @@ async def _day_report_job(
                 if document is not None:
                     await _send_document(bot, chat_id, document)
 
-        # Пошта — після Telegram і байдужа до його результату: у адміністратора
-        # бот міг бути заблокований, а директор усе одно чекає лист.
-        if pdf is not None:
-            await mailer.safe_send_day_report(report, pdf, kind=kind)
-
         if _should_mark(attempted, sent):
-            await mark_run(session, job_key, d)
+            await mark_run(session, "report", d)
         await session.commit()
 
-    log.info("Звіт %s за %s: надіслано %s з %s", kind.value, d, sent, attempted)
+    log.info("Звіт за %s: надіслано %s з %s", d, sent, attempted)
     return sent
-
-
-async def meals_report(
-    bot: Bot,
-    maker: async_sessionmaker[AsyncSession],
-    d: Date | None = None,
-    *,
-    force: bool = False,
-) -> int:
-    """Звіт про харчування — той, що йде на кухню."""
-    return await _day_report_job(bot, maker, d, ReportKind.MEALS, force=force)
-
-
-async def absence_report(
-    bot: Bot,
-    maker: async_sessionmaker[AsyncSession],
-    d: Date | None = None,
-    *,
-    force: bool = False,
-) -> int:
-    """Звіт про відсутніх і хворих — той, що йде медсестрі."""
-    return await _day_report_job(bot, maker, d, ReportKind.ABSENCE, force=force)
 
 
 async def sync_all_months(session: AsyncSession, limit: int = 12) -> tuple[int, int]:
@@ -407,36 +359,36 @@ async def sync_all_months(session: AsyncSession, limit: int = 12) -> tuple[int, 
     """
     months = await available_months(session, limit=limit)
     moment = today()
-    eating: list = []
+    absences: list = []
     tabs: list = []
     for y, m in months:
-        eat, absent, sick = await build_month_matrices(
+        absent, sick = await build_month_matrices(
             session, y, m, school_name=settings.school_name, today=moment
         )
-        eating.append(eat)
-        tabs.append(eat)
-        # Вкладки відсутніх і хворих створюємо лише за місяці, де ці цифри
-        # справді є. Уся історія до появи фічі їх не має, тож інакше ми
-        # щоночі перебудовували б два десятки порожніх вкладок — і без потреби
-        # впиралися б у квоту Google на записи.
-        tabs.extend(extra for extra in (absent, sick) if extra.has_any_data)
+        absences.append(absent)
+        tabs.append(absent)
+        # Вкладку хворих створюємо лише за місяці, де ці цифри справді є: уся
+        # історія до появи фічі їх не має, тож інакше ми щоночі перебудовували б
+        # десяток порожніх вкладок — і без потреби впиралися б у квоту Google.
+        if sick.has_any_data:
+            tabs.append(sick)
 
     synced = 0
     for i, matrix in enumerate(tabs):
         if i:
-            # Вкладок тепер утричі більше (три метрики на місяць), а Sheets
-            # дозволяє ~60 записів на хвилину. Без паузи нічний синк упирався б
-            # у 429, і safe_rebuild_month тихо проковтнув би це — вкладки
-            # лишилися б застарілими, і ніхто б не помітив.
+            # Вкладок удвічі більше за кількість місяців, а Sheets дозволяє
+            # ~60 записів на хвилину. Без паузи нічний синк упирався б у 429,
+            # і safe_rebuild_month тихо проковтнув би це — вкладки лишилися б
+            # застарілими, і ніхто б не помітив.
             await asyncio.sleep(SHEETS_PAUSE)
         if await sheets.safe_rebuild_month(matrix):
             synced += 1
 
-    # «Зведення» лишається про харчування: це відповідь на питання
-    # «скільки годували», а не «скільки хворіли».
-    if eating:
+    # «Зведення» — про відсутніх: це відповідь на питання «скільки пропустили
+    # за місяць», а не «скільки з них хворіли».
+    if absences:
         try:
-            await sheets.sync_summary(eating)
+            await sheets.sync_summary(absences)
         except Exception:
             log.exception("Не вдалося оновити вкладку «Зведення»")
 
@@ -483,8 +435,7 @@ def daily_plan() -> list[tuple[str, Time, DailyJob]]:
 
         plan.append((f"remind:{slot}", t, run))
 
-    plan.append(("report:meals", settings.meals_report_time, meals_report))
-    plan.append(("report:absence", settings.absence_report_time, absence_report))
+    plan.append(("report", settings.report_time, day_report))
     return plan
 
 

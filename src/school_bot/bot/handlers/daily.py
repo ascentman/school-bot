@@ -25,12 +25,7 @@ from school_bot.bot.callbacks import (
 from school_bot.clock import hhmm, today
 from school_bot.config import settings
 from school_bot.db.models import EntrySource, MealField, SchoolClass, Teacher
-from school_bot.domain.meals import (
-    get_entry,
-    last_known_count,
-    upsert_entry,
-    was_corrected,
-)
+from school_bot.domain.meals import get_entry, upsert_entry, was_corrected
 
 log = logging.getLogger(__name__)
 router = Router(name="daily")
@@ -73,13 +68,14 @@ async def _ask_absent(
     d: Date,
     edit: bool = True,
 ) -> None:
+    """Крок 1 — він же весь запит для класу, який ще нічого не подав."""
     entry = await get_entry(session, school_class.id, d)
     await _show(
         message,
-        texts.prompt_absent(school_class.name, d, entry.eating_count),
+        texts.prompt(school_class.name, d),
         keyboards.absent_pad(
             school_class.id, d,
-            current=entry.absent_count,
+            current=entry.absent_count if entry else None,
             max_children=settings.max_children,
         ),
         edit=edit,
@@ -112,67 +108,18 @@ async def _finish(
     d: Date,
     edit: bool = True,
 ) -> None:
-    """Підсумок дня з усіма трьома цифрами."""
+    """Підсумок дня: відсутні й з них хворі."""
     entry = await get_entry(session, school_class.id, d)
     await _show(
         message,
         texts.prompt_answered(
-            school_class.name, d, entry.eating_count, hhmm(),
+            school_class.name, d, hhmm(),
             edited=await was_corrected(session, entry.id),
             absent=entry.absent_count,
             sick=entry.sick_count,
         ),
         keyboards.edit_button(school_class.id, d),
         edit=edit,
-    )
-
-
-async def _save_and_confirm(
-    query: CallbackQuery,
-    session: AsyncSession,
-    teacher: Teacher,
-    *,
-    class_id: int,
-    d: Date,
-    value: int,
-) -> None:
-    school_class = await session.get(SchoolClass, class_id)
-    if school_class is None:
-        await query.answer(texts.NOTHING_TO_EDIT, show_alert=True)
-        return
-
-    _, was_update = await upsert_entry(
-        session,
-        class_id=class_id,
-        d=d,
-        eating_count=value,
-        teacher_id=teacher.id,
-        source=_source_for(teacher),
-    )
-    await _ask_absent(query.message, session, school_class=school_class, d=d)
-    await query.answer(texts.TOAST_SAVED)
-    log.info(
-        "%s: %s = %s (%s)",
-        d, school_class.name, value, "правка" if was_update else "новий запис",
-    )
-
-
-@router.callback_query(MealSet.filter())
-async def set_value(
-    query: CallbackQuery,
-    callback_data: MealSet,
-    session: AsyncSession,
-    teacher: Teacher,
-    state: FSMContext,
-) -> None:
-    await state.clear()
-    await _save_and_confirm(
-        query,
-        session,
-        teacher,
-        class_id=callback_data.class_id,
-        d=callback_data.date,
-        value=callback_data.value,
     )
 
 
@@ -184,7 +131,7 @@ async def set_absent(
     teacher: Teacher,
     state: FSMContext,
 ) -> None:
-    """Крок 2. value=None — «Пропустити»: нічого не пишемо, цифра їжі лишається."""
+    """Крок 1: «Всього відсутніх». Саме тут створюється запис дня."""
     await state.clear()
     school_class = await session.get(SchoolClass, callback_data.class_id)
     if school_class is None:
@@ -192,13 +139,13 @@ async def set_absent(
         return
     d = callback_data.date
 
-    if await get_entry(session, school_class.id, d) is None:
-        # Запис зник між кроками (адмін видалив клас, гонка) — не створюємо
-        # порожній запис із самих відсутніх: харчування NOT NULL.
-        await query.answer(texts.NOTHING_TO_EDIT, show_alert=True)
-        return
-
     if callback_data.value is None:
+        # «Пропустити» більше не показується, але кнопки з ним висять у чатах
+        # з часів, коли відсутні були другим питанням. Якщо запис уже є —
+        # просто показуємо підсумок; якщо немає — пропускати нічого.
+        if await get_entry(session, school_class.id, d) is None:
+            await query.answer(texts.STALE_PROMPT, show_alert=True)
+            return
         await _finish(query.message, session, school_class=school_class, d=d)
         await query.answer(texts.TOAST_SKIPPED)
         return
@@ -206,7 +153,7 @@ async def set_absent(
     # Відсутніх немає — отже й хворих нуль. Питати про це окремо безглуздо, а
     # лишати NULL означало б дірку у звіті там, де відповідь очевидна. Пишемо
     # обидві цифри одним викликом: це одна дія вчителя, а не дві.
-    await upsert_entry(
+    _, was_update = await upsert_entry(
         session,
         class_id=school_class.id,
         d=d,
@@ -223,6 +170,11 @@ async def set_absent(
     else:
         await _finish(query.message, session, school_class=school_class, d=d)
     await query.answer(texts.TOAST_SAVED)
+    log.info(
+        "%s: %s відсутніх %s (%s)",
+        d, school_class.name, callback_data.value,
+        "правка" if was_update else "новий запис",
+    )
 
 
 @router.callback_query(MealSick.filter())
@@ -233,7 +185,7 @@ async def set_sick(
     teacher: Teacher,
     state: FSMContext,
 ) -> None:
-    """Крок 3. Стелю перевіряємо ще раз на сервері, а не лише в клавіатурі."""
+    """Крок 2. Стелю перевіряємо ще раз на сервері, а не лише в клавіатурі."""
     await state.clear()
     school_class = await session.get(SchoolClass, callback_data.class_id)
     if school_class is None:
@@ -297,17 +249,21 @@ async def edit_value(
         )
         return
 
-    existing = await get_entry(session, callback_data.class_id, d)
-    hint = existing.eating_count if existing else await last_known_count(
-        session, callback_data.class_id, d
-    )
-    await query.message.edit_text(
-        texts.prompt(school_class.name, d),
-        reply_markup=keyboards.number_pad(
-            callback_data.class_id, d, last_known=hint, max_children=settings.max_children
-        ),
-    )
+    await _ask_absent(query.message, session, school_class=school_class, d=d)
     await query.answer()
+
+
+@router.callback_query(MealSet.filter())
+@router.callback_query(MealManual.filter())
+async def stale_meal_button(query: CallbackQuery, state: FSMContext) -> None:
+    """Кнопки знятого з обліку харчування.
+
+    Ранкові повідомлення зі сіткою «скільки харчуються» лишилися в чатах
+    вчителів, і Telegram не дає їх прибрати. Без цього хендлера тап по такій
+    кнопці виглядав би як мовчання бота — тому коротко кажемо, що робити далі.
+    """
+    await state.clear()
+    await query.answer(texts.STALE_PROMPT, show_alert=True)
 
 
 async def _start_manual(
@@ -316,23 +272,13 @@ async def _start_manual(
 ) -> None:
     """Спільний вхід у ручний ввід. Поле кладемо в стан, а не в callback_data.
 
-    Додати поле в MealManual не можна: у чатах вчителів висять старі кнопки
-    цього префікса, і зайвий сегмент зробив би їх нечитними.
+    Додати поле в callback-клас не можна: у чатах вчителів висять старі кнопки
+    цих префіксів, і зайвий сегмент зробив би їх нечитними.
     """
     await state.set_state(ManualEntry.waiting_for_number)
     await state.update_data(class_id=class_id, d=d, field=meal_field.value)
     await query.message.answer(ask)
     await query.answer()
-
-
-@router.callback_query(MealManual.filter())
-async def ask_manual(
-    query: CallbackQuery, callback_data: MealManual, state: FSMContext
-) -> None:
-    await _start_manual(
-        query, state, class_id=callback_data.class_id, d=callback_data.d,
-        meal_field=MealField.EATING, ask=texts.MANUAL_ASK,
-    )
 
 
 @router.callback_query(MealManualAbsent.filter())
@@ -377,21 +323,10 @@ async def receive_manual(
         await message.answer(texts.NOTHING_TO_EDIT)
         return
 
-    meal_field = MealField(data.get("field", MealField.EATING.value))
+    meal_field = MealField(data.get("field", MealField.ABSENT.value))
     entry = await get_entry(session, class_id, d)
 
-    if meal_field is MealField.EATING:
-        await upsert_entry(
-            session, class_id=class_id, d=d, eating_count=value,
-            teacher_id=teacher.id, source=_source_for(teacher),
-        )
-        # Ручний ввід теж веде в ланцюжок: інакше «Інша цифра» була б тихим
-        # обхідним шляхом повз питання про відсутніх.
-        await _ask_absent(message, session, school_class=school_class, d=d, edit=False)
-    elif entry is None:
-        await message.answer(texts.NOTHING_TO_EDIT)
-        return
-    elif meal_field is MealField.ABSENT:
+    if meal_field is MealField.ABSENT:
         await upsert_entry(
             session, class_id=class_id, d=d, absent_count=value,
             sick_count=0 if value == 0 else None,
@@ -403,6 +338,9 @@ async def receive_manual(
             )
         else:
             await _finish(message, session, school_class=school_class, d=d, edit=False)
+    elif entry is None:
+        await message.answer(texts.NOTHING_TO_EDIT)
+        return
     else:
         # Та сама стеля, що й у клавіатурі: пад показує не всі числа, тож
         # ручний ввід — це другий шлях, а не обхідний.

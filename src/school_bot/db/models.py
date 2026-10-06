@@ -45,8 +45,9 @@ class EntrySource(StrEnum):
 class MealField(StrEnum):
     """Яку саме цифру запису змінили. Потрібне журналу правок.
 
-    До появи відсутніх/хворих цифра була одна, тож журнал її не називав.
-    Тепер без назви поля неможливо відповісти, що саме виправили.
+    EATING лишається попри те, що харчування більше не обліковується: у
+    meal_entry_audit за попередні місяці лежать рядки з цим значенням, і без
+    члена enum вони перестали б читатися назад.
     """
 
     EATING = "eating"
@@ -151,7 +152,10 @@ class MealEntry(Base):
         ForeignKey("school_class.id", ondelete="CASCADE"), index=True
     )
     date: Mapped[Date] = mapped_column(sa.Date, index=True)
-    eating_count: Mapped[int] = mapped_column(Integer)
+    # Харчування більше не обліковується: нові записи лишають колонку порожньою.
+    # Колонка й історія за попередні місяці на місці — цифри за вересень
+    # мусять лишитися читними, навіть якщо їх уже ніхто не збирає.
+    eating_count: Mapped[int | None] = mapped_column(Integer)
     present_count: Mapped[int | None] = mapped_column(Integer)
     # NULL — не питали або вчитель пропустив питання; 0 — відсутніх справді
     # немає. Зливати ці два стани не можна: до цієї фічі даних не було взагалі,
@@ -191,7 +195,7 @@ class MealEntryAudit(Base):
     # "TEACHER"). З малими літерами наявні рядки не читалися б назад.
     changed_field: Mapped[MealField] = mapped_column(
         sa.Enum(MealField, native_enum=False),
-        default=MealField.EATING,
+        default=MealField.ABSENT,
         server_default=MealField.EATING.name,
     )
     old_value: Mapped[int | None] = mapped_column(Integer)

@@ -34,13 +34,13 @@ async def test_matrix_december_crosses_year(session, classes):
 
 async def test_matrix_totals(session, classes, teacher):
     await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 1), eating_count=24, teacher_id=teacher.id
+        session, class_id=classes[0].id, d=date(2026, 9, 1), absent_count=24, teacher_id=teacher.id
     )
     await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 2), eating_count=22, teacher_id=teacher.id
+        session, class_id=classes[0].id, d=date(2026, 9, 2), absent_count=22, teacher_id=teacher.id
     )
     await upsert_entry(
-        session, class_id=classes[1].id, d=date(2026, 9, 1), eating_count=18, teacher_id=teacher.id
+        session, class_id=classes[1].id, d=date(2026, 9, 1), absent_count=18, teacher_id=teacher.id
     )
 
     m = await build_month_matrix(session, 2026, 9)
@@ -74,7 +74,7 @@ async def test_weekend_columns_are_not_school_days(session, classes):
 
 async def test_missing_days_detection(session, classes, teacher):
     await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 1), eating_count=24, teacher_id=teacher.id
+        session, class_id=classes[0].id, d=date(2026, 9, 1), absent_count=24, teacher_id=teacher.id
     )
     m = await build_month_matrix(session, 2026, 9)
     row = next(r for r in m.rows if r.name == "1-А")
@@ -96,7 +96,7 @@ async def test_class_without_any_entry(session, classes):
 async def test_available_months(session, classes, teacher):
     for d in (date(2026, 9, 1), date(2026, 10, 1), date(2026, 10, 2)):
         await upsert_entry(
-            session, class_id=classes[0].id, d=d, eating_count=20, teacher_id=teacher.id
+            session, class_id=classes[0].id, d=d, absent_count=20, teacher_id=teacher.id
         )
     assert await available_months(session) == [(2026, 10), (2026, 9)]
 
@@ -108,7 +108,7 @@ async def test_available_months_empty(session, classes):
 async def test_future_days_are_not_gaps(session, classes, teacher):
     """Майбутній навчальний день — не пропуск, а просто ще не настав."""
     await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 1), eating_count=24, teacher_id=teacher.id
+        session, class_id=classes[0].id, d=date(2026, 9, 1), absent_count=24, teacher_id=teacher.id
     )
     m = await build_month_matrix(session, 2026, 9, today=date(2026, 9, 3))
     row = next(r for r in m.rows if r.name == "1-А")
@@ -126,7 +126,7 @@ async def test_future_days_are_not_gaps(session, classes, teacher):
 
 async def test_missing_total_respects_today(session, classes, teacher):
     await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 1), eating_count=24, teacher_id=teacher.id
+        session, class_id=classes[0].id, d=date(2026, 9, 1), absent_count=24, teacher_id=teacher.id
     )
     m = await build_month_matrix(session, 2026, 9, today=date(2026, 9, 2))
     # 3 класи × 2 навч. дні, що минули = 6 клітинок, з них 1 заповнена
@@ -139,7 +139,7 @@ async def test_without_today_all_school_days_count(session, classes):
     assert len(m.elapsed_school_days) == 22
 
 
-# --- три метрики ------------------------------------------------------------
+# --- дві метрики ------------------------------------------------------------
 
 
 async def test_matrix_projects_the_requested_metric(session, classes):
@@ -147,35 +147,34 @@ async def test_matrix_projects_the_requested_metric(session, classes):
     from school_bot.reports.matrix import build_month_matrix
 
     await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 1), eating_count=24,
+        session, class_id=classes[0].id, d=date(2026, 9, 1),
         absent_count=3, sick_count=1, teacher_id=None,
     )
 
-    eating = await build_month_matrix(session, 2026, 9)
-    absent = await build_month_matrix(session, 2026, 9, metric=MealField.ABSENT)
+    absent = await build_month_matrix(session, 2026, 9)
     sick = await build_month_matrix(session, 2026, 9, metric=MealField.SICK)
 
-    assert eating.rows[0].value(date(2026, 9, 1)) == 24
+    assert absent.metric is MealField.ABSENT, "відсутні — метрика за замовчуванням"
     assert absent.rows[0].value(date(2026, 9, 1)) == 3
     assert sick.rows[0].value(date(2026, 9, 1)) == 1
-    assert (eating.grand_total, absent.grand_total, sick.grand_total) == (24, 3, 1)
+    assert (absent.grand_total, sick.grand_total) == (3, 1)
 
 
 async def test_a_skipped_metric_is_not_a_gap(session, classes):
-    """Клас подав харчування й пропустив відсутніх — це не пропущений день.
+    """Клас подав відсутніх і пропустив хворих — це не пропущений день.
 
-    Інакше аркуш «Відсутні» був би суцільно червоний: усі дні до появи цієї
-    фічі й кожен пропуск вчителя рахувалися б дірами.
+    Інакше аркуш «Хворі» був би суцільно червоний: кожен пропуск вчителя
+    рахувався б дірою.
     """
     from school_bot.db.models import MealField
     from school_bot.reports.matrix import build_month_matrix
 
     await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 1), eating_count=24,
+        session, class_id=classes[0].id, d=date(2026, 9, 1), absent_count=3,
         teacher_id=None,
     )
     m = await build_month_matrix(
-        session, 2026, 9, metric=MealField.ABSENT, today=date(2026, 9, 1)
+        session, 2026, 9, metric=MealField.SICK, today=date(2026, 9, 1)
     )
     col = next(c for c in m.columns if c.date == date(2026, 9, 1))
 
@@ -184,61 +183,76 @@ async def test_a_skipped_metric_is_not_a_gap(session, classes):
 
 
 async def test_a_day_without_any_entry_is_still_a_gap(session, classes):
-    """А ось справжній пропуск лишається червоним на всіх трьох аркушах."""
+    """А ось справжній пропуск лишається червоним на обох аркушах."""
     from school_bot.db.models import MealField
     from school_bot.reports.matrix import build_month_matrix
 
     await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 1), eating_count=24,
+        session, class_id=classes[0].id, d=date(2026, 9, 1), absent_count=3,
         teacher_id=None,
     )
-    m = await build_month_matrix(
-        session, 2026, 9, metric=MealField.ABSENT, today=date(2026, 9, 2)
-    )
-    col = next(c for c in m.columns if c.date == date(2026, 9, 2))
-    assert m.is_gap(m.rows[0], col)
+    for metric in (MealField.ABSENT, MealField.SICK):
+        m = await build_month_matrix(
+            session, 2026, 9, metric=metric, today=date(2026, 9, 2)
+        )
+        col = next(c for c in m.columns if c.date == date(2026, 9, 2))
+        assert m.is_gap(m.rows[0], col), metric
 
 
-async def test_eating_heading_did_not_change(session, classes):
-    """Основна таблиця має виглядати так само, як до появи двох інших."""
+async def test_heading_names_the_metric(session, classes):
+    """Заголовок має сам казати, що саме в таблиці — відсутні чи хворі."""
+    from school_bot.db.models import MealField
     from school_bot.reports.matrix import build_month_matrix
 
-    m = await build_month_matrix(session, 2026, 9, school_name="Ліцей №1")
-    assert m.heading == "Облік харчування учнів — вересень 2026"
+    absent = await build_month_matrix(session, 2026, 9, school_name="Ліцей №1")
+    sick = await build_month_matrix(session, 2026, 9, metric=MealField.SICK)
+
+    assert absent.heading == "Облік відсутніх учнів — відсутні — вересень 2026"
+    assert sick.heading == "Облік відсутніх учнів — хворі — вересень 2026"
 
 
-async def test_build_month_matrices_returns_eating_first(session, classes):
+async def test_build_month_matrices_returns_absent_first(session, classes):
+    """Відсутні — основна таблиця: перший аркуш, перша сторінка, перша вкладка."""
     from school_bot.db.models import MealField
     from school_bot.reports.matrix import build_month_matrices
 
     ms = await build_month_matrices(session, 2026, 9)
-    assert [m.metric for m in ms] == [MealField.EATING, MealField.ABSENT, MealField.SICK]
+    assert [m.metric for m in ms] == [MealField.ABSENT, MealField.SICK]
+
+
+async def test_eating_is_no_longer_a_metric():
+    """Харчування знято з обліку — аркушів по ньому більше не буває.
+
+    Колонка в БД лишається, щоб історія за попередні місяці читалася, але
+    жоден експорт її вже не чіпає.
+    """
+    from school_bot.db.models import MealField
+    from school_bot.reports.matrix import METRICS, UA_METRIC
+
+    assert MealField.EATING not in METRICS
+    assert MealField.EATING not in UA_METRIC
 
 
 async def test_has_any_data_marks_empty_metrics(session, classes):
     """Порожню метрику не варто вивантажувати окремою вкладкою.
 
-    Уся історія до появи фічі не має ані відсутніх, ані хворих — інакше
-    щоночі перебудовувалися б десятки порожніх вкладок.
+    Уся історія до появи фічі не має хворих — інакше щоночі
+    перебудовувалися б десятки порожніх вкладок.
     """
-    from school_bot.db.models import MealField
     from school_bot.reports.matrix import build_month_matrices
 
     await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 1), eating_count=24,
+        session, class_id=classes[0].id, d=date(2026, 9, 1), absent_count=3,
         teacher_id=None,
     )
-    eating, absent, sick = await build_month_matrices(session, 2026, 9)
+    absent, sick = await build_month_matrices(session, 2026, 9)
 
-    assert eating.has_any_data
-    assert not absent.has_any_data
+    assert absent.has_any_data
     assert not sick.has_any_data
 
     await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 1), absent_count=2,
+        session, class_id=classes[0].id, d=date(2026, 9, 1), sick_count=2,
         teacher_id=None,
     )
-    _, absent, sick = await build_month_matrices(session, 2026, 9)
-    assert absent.has_any_data
-    assert not sick.has_any_data
-    assert MealField.ABSENT is absent.metric
+    absent, sick = await build_month_matrices(session, 2026, 9)
+    assert absent.has_any_data and sick.has_any_data

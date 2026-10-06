@@ -21,6 +21,7 @@ TZ = ZoneInfo("Europe/Kyiv")
 def at(monkeypatch):
     """Заморозити «зараз» на вказаній годині понеділка 07.09.2026."""
 
+    # Розклад дня: запит о 09:30, звіт о 09:55.
     def _freeze(hour: int, minute: int = 0, day=MONDAY):
         monkeypatch.setattr(
             jobs, "now", lambda: datetime.combine(day, datetime.min.time(), TZ).replace(
@@ -32,21 +33,21 @@ def at(monkeypatch):
 
 
 async def test_nothing_to_catch_before_first_job(bot, maker, school, at):
-    at(8, 30)   # ще до 09:05
+    at(9, 15)   # ще до 09:30
     assert await jobs.catch_up(bot, maker) == {}
     assert bot.sent == []
 
 
 async def test_catches_missed_prompt(bot, maker, school, at):
-    """Сервер піднявся о 09:20 — запланований о 09:05 запит cron уже не відтворить."""
-    at(9, 10)
+    """Сервер піднявся о 09:40 — запланований о 09:30 запит cron уже не відтворить."""
+    at(9, 40)
     result = await jobs.catch_up(bot, maker)
     assert result == {"prompt": 3}
     assert len(bot.sent) == 3
 
 
 async def test_restart_does_not_duplicate(bot, maker, school, at):
-    at(9, 10)
+    at(9, 40)
     await jobs.catch_up(bot, maker)
     sent_after_first = len(bot.sent)
 
@@ -57,33 +58,28 @@ async def test_restart_does_not_duplicate(bot, maker, school, at):
 
 
 async def test_catches_everything_after_long_blackout(bot, maker, school, at):
-    """Світло зникло зранку і зʼявилося об 11:00 — догнати всі чотири розсилки."""
+    """Світло зникло зранку і зʼявилося об 11:00 — догнати обидві розсилки."""
     at(11, 0)
     result = await jobs.catch_up(bot, maker)
-    assert result == {
-        "prompt": 3, "remind:09:15": 3, "remind:09:30": 3,
-        "report:meals": 1, "report:absence": 1,
-    }
+    assert result == {"prompt": 3, "report": 1}
 
 
 async def test_partial_catch_up(bot, maker, school, at):
-    """О 09:20 минули запит і перше нагадування, друге — ще ні."""
-    at(9, 20)
+    """О 09:40 минув запит, а час звіту — ще ні."""
+    at(9, 40)
     result = await jobs.catch_up(bot, maker)
-    assert set(result) == {"prompt", "remind:09:15"}
+    assert set(result) == {"prompt"}
 
 
 async def test_skips_jobs_that_already_ran(bot, maker, school, at):
-    at(9, 5)
+    at(9, 30)
     await jobs.daily_prompt(bot, maker, MONDAY)
     bot.sent.clear()
 
     at(11, 0)
     result = await jobs.catch_up(bot, maker)
     assert "prompt" not in result
-    assert set(result) == {
-        "remind:09:15", "remind:09:30", "report:meals", "report:absence",
-    }
+    assert set(result) == {"report"}
 
 
 async def test_silent_on_weekend(bot, maker, school, at):
@@ -101,7 +97,7 @@ async def test_silent_on_vacation(bot, maker, school, at):
 
 
 async def test_silent_after_deadline(bot, maker, school, at):
-    """О 19:00 запит про сьогоднішнє харчування вже безпредметний."""
+    """О 19:00 запит про сьогоднішніх відсутніх вже безпредметний."""
     at(19, 0)
     assert await jobs.catch_up(bot, maker) == {}
     assert bot.sent == []
@@ -116,12 +112,12 @@ async def test_catch_up_respects_submitted_classes(bot, maker, school, at):
     """Клас, який устиг подати дані до відновлення, повторно не турбуємо."""
     async with maker() as s:
         await upsert_entry(
-            s, class_id=school["classes"][0], d=MONDAY, eating_count=24,
+            s, class_id=school["classes"][0], d=MONDAY, absent_count=2,
             teacher_id=school["maria"],
         )
         await s.commit()
 
-    at(9, 10)
+    at(9, 40)
     result = await jobs.catch_up(bot, maker)
     assert result == {"prompt": 2}
     assert not any("1-А" in m.text for m in bot.sent)
@@ -144,13 +140,13 @@ async def test_total_delivery_failure_is_retried(maker, school, at):
 
     Інакше мережевий збій під час догоняння тихо зʼїв би розсилку на цілий день.
     """
-    at(9, 10)
+    at(9, 40)
     dead = DeadBot()
     assert await jobs.catch_up(dead, maker) == {"prompt": 0}
 
     # Причину усунено (вчитель натиснув Start) — наступний старт має спрацювати.
     alive = FakeBot()
-    at(9, 10)
+    at(9, 40)
     assert await jobs.catch_up(alive, maker) == {"prompt": 3}
     assert len(alive.sent) == 3
 
@@ -166,10 +162,10 @@ async def test_partial_delivery_is_marked_done(maker, school, at):
                 raise TelegramBadRequest(method=None, message="chat not found")
             return await super().send_message(chat_id, text, reply_markup, **kwargs)
 
-    at(9, 10)
+    at(9, 40)
     assert await jobs.catch_up(FlakyBot(), maker) == {"prompt": 1}
 
-    at(9, 10)
+    at(9, 40)
     second = FakeBot()
     assert "prompt" not in await jobs.catch_up(second, maker)
 
@@ -183,9 +179,9 @@ async def test_no_recipients_still_marks_done(maker, school, at):
             (await s.get(Teacher, tid)).is_active = False
         await s.commit()
 
-    at(9, 10)
+    at(9, 40)
     bot = FakeBot()
     assert await jobs.catch_up(bot, maker) == {"prompt": 0}
 
-    at(9, 10)
+    at(9, 40)
     assert "prompt" not in await jobs.catch_up(FakeBot(), maker)

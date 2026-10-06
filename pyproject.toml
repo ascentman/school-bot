@@ -1,7 +1,7 @@
 [project]
 name = "school-bot"
 version = "0.1.0"
-description = "Telegram-бот обліку харчування учнів школи"
+description = "Telegram-бот обліку відсутніх учнів школи"
 requires-python = ">=3.12"
 dependencies = [
     "aiogram>=3.31,<4",

@@ -32,11 +32,13 @@ class SheetsDisabledError(RuntimeError):
     pass
 
 
-def tab_name(year: int, month: int, metric: MealField = MealField.EATING) -> str:
-    """Назва вкладки. Харчування лишається «2026-09», решта — з суфіксом."""
-    base = f"{year}-{month:02d}"
-    suffix = UA_METRIC[metric]
-    return f"{base} {suffix}" if suffix else base
+def tab_name(year: int, month: int, metric: MealField = MealField.ABSENT) -> str:
+    """Назва вкладки: «2026-09 відсутні», «2026-09 хворі».
+
+    Вкладки «2026-09» без суфікса — це харчування за попередні місяці. Їх
+    більше ніхто не перебудовує, але й не чіпає: цифри в них справжні.
+    """
+    return f"{year}-{month:02d} {UA_METRIC[metric]}"
 
 
 def _client() -> Any:
@@ -165,7 +167,7 @@ def _rebuild_month_sync(matrix: MonthMatrix) -> str:
 
 
 def summary_grid(matrices: list[MonthMatrix]) -> list[list[Any]]:
-    """Вкладка «Зведення»: місяці × класи.
+    """Вкладка «Зведення»: місяці × класи, сумарно відсутніх за місяць.
 
     Винесено з _sync_summary_sync окремо, щоб перевірятися без клієнта Google.
     Клас, якого не було в старіших місяцях, дає порожню клітинку, а не нуль.

@@ -37,23 +37,29 @@ async def _september(session, classes, teacher, *, today=None):
     for day, counts in {1: (24, 18, 20), 2: (22, 19, 21), 3: (25, 18, 20)}.items():
         for cls, n in zip(classes, counts, strict=True):
             await upsert_entry(
-                session, class_id=cls.id, d=date(2026, 9, day), eating_count=n,
+                session, class_id=cls.id, d=date(2026, 9, day), absent_count=n,
                 teacher_id=teacher.id,
             )
     return await build_month_matrix(session, 2026, 9, school_name="Ліцей №1", today=today)
 
 
 def test_tab_name_sorts_chronologically():
-    """Назва вкладки має сортуватися як рядок — інакше жовтень стане перед лютим."""
-    assert tab_name(2026, 9) == "2026-09"
-    assert tab_name(2026, 12) == "2026-12"
-    assert sorted([tab_name(2026, 10), tab_name(2026, 2)]) == ["2026-02", "2026-10"]
+    """Назва вкладки має сортуватися як рядок — інакше жовтень стане перед лютим.
+
+    Саме тому суфікс метрики йде ПІСЛЯ дати: інакше сусідні місяці
+    розʼїхалися б по метриках.
+    """
+    assert tab_name(2026, 9) == "2026-09 відсутні"
+    assert tab_name(2026, 12) == "2026-12 відсутні"
+    assert sorted([tab_name(2026, 10), tab_name(2026, 2)]) == [
+        "2026-02 відсутні", "2026-10 відсутні"
+    ]
 
 
 async def test_grid_shape(session, classes, teacher):
     grid = matrix_to_grid(await _september(session, classes, teacher))
 
-    assert grid[0][0] == "Облік харчування учнів — вересень 2026"
+    assert grid[0][0] == "Облік відсутніх учнів — відсутні — вересень 2026"
     assert grid[1][0] == "Ліцей №1"
     assert grid[HEADER_DAYS_ROW][0] == "Клас"
     assert grid[HEADER_DAYS_ROW][1] == "1"
@@ -190,7 +196,9 @@ def test_summary_tab_name_is_stable():
     assert SUMMARY_TAB == "Зведення"
 
 
-@pytest.mark.parametrize("month,expected", [(1, "2026-01"), (12, "2026-12")])
+@pytest.mark.parametrize(
+    "month,expected", [(1, "2026-01 відсутні"), (12, "2026-12 відсутні")]
+)
 def test_tab_name_pads_month(month: int, expected: str):
     assert tab_name(2026, month) == expected
 
@@ -230,13 +238,16 @@ async def test_format_requests_paint_weekends_and_vacations(session, classes, te
     assert not (weekends & vacations), "день не може бути водночас сірим і жовтим"
 
 
-def test_tab_name_suffixes_only_the_extra_metrics():
-    """Вкладка харчування має лишитися «2026-09» — її вже бачила перевірка."""
+def test_tab_name_carries_the_metric():
+    """Кожна метрика — своя вкладка, назва сама каже яка.
+
+    Вкладок «2026-09» без суфікса синк більше не торкається: там лежить
+    харчування за попередні місяці, і цифри в ньому справжні.
+    """
     from school_bot.db.models import MealField
     from school_bot.reports.sheets import tab_name
 
-    assert tab_name(2026, 9) == "2026-09"
-    assert tab_name(2026, 9, MealField.EATING) == "2026-09"
+    assert tab_name(2026, 9) == "2026-09 відсутні"
     assert tab_name(2026, 9, MealField.ABSENT) == "2026-09 відсутні"
     assert tab_name(2026, 9, MealField.SICK) == "2026-09 хворі"
 
@@ -248,7 +259,7 @@ async def test_absent_grid_carries_the_absent_numbers(session, classes):
     from school_bot.reports.sheets import matrix_to_grid
 
     await upsert_entry(
-        session, class_id=classes[0].id, d=date(2026, 9, 1), eating_count=24,
+        session, class_id=classes[0].id, d=date(2026, 9, 1),
         absent_count=3, teacher_id=None,
     )
     m = await build_month_matrix(session, 2026, 9, metric=MealField.ABSENT)
